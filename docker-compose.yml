@@ -1,0 +1,37 @@
+services:
+  django:
+    image: python:3.11-slim
+    container_name: stego_django
+    working_dir: /app
+    environment:
+      - PYTHONUTF8=1
+      - PYTHONIOENCODING=utf-8
+    volumes:
+      - ./:/app
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+             python stego_backend/manage.py migrate &&
+             python stego_backend/manage.py runserver 0.0.0.0:8000"
+    ports:
+      - "8000:8000"
+
+  streamlit:
+    image: python:3.11-slim
+    container_name: stego_streamlit
+    working_dir: /app
+    environment:
+      - PYTHONUTF8=1
+      - PYTHONIOENCODING=utf-8
+      # So `import stego_frontend` works when Streamlit runs pages under stego_frontend/pages/
+      - PYTHONPATH=/app
+      - FASTGPT_BASE_URL=https://cloud.fastgpt.io/api
+      - FASTGPT_API_KEY=${FASTGPT_API_KEY}
+    volumes:
+      - ./:/app
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+             streamlit run stego_frontend/app.py --server.address=0.0.0.0 --server.port=8501"
+    ports:
+      - "8501:8501"
+    depends_on:
+      - django
