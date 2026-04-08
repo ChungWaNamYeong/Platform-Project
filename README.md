@@ -1,5 +1,7 @@
 # Stego Platform Project
 
+    branchtest
+    
 本项目是一个信息隐藏教学平台的基础骨架，包含：
 
 - `stego_backend`：Django 后端（含 `Student` 扩展用户模型）
