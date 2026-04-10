@@ -7,6 +7,7 @@ import json
 import os
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -21,6 +22,8 @@ WELCOME_MESSAGE = (
     "\u6216\u8005\u4f60\u6709\u5565\u5b66\u4e60\u4e0a\u7684\u5c0f\u601d\u8003\uff0c"
     "\u90fd\u6b22\u8fce\u6765\u627e\u6211\u5440\uff01"
 )
+
+BJT = timezone(timedelta(hours=8))
 
 
 def init_state() -> None:
@@ -45,6 +48,50 @@ def init_state() -> None:
 
     if "fastgpt_chat_id" not in st.session_state:
         st.session_state.fastgpt_chat_id = ""
+
+
+def _now_time_iso() -> str:
+    """Return ISO datetime string in UTC+8."""
+    return datetime.now(BJT).isoformat()
+
+
+def _format_chat_time(raw_time: Any) -> str:
+    """Format message time like chat apps, e.g. '今天 14:32:05'."""
+    if not raw_time:
+        return ""
+
+    now = datetime.now(BJT)
+    dt: datetime | None = None
+
+    if isinstance(raw_time, (int, float)):
+        try:
+            dt = datetime.fromtimestamp(raw_time, tz=BJT)
+        except Exception:
+            dt = None
+    elif isinstance(raw_time, str):
+        value = raw_time.strip()
+        if not value:
+            return ""
+        try:
+            parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=BJT)
+            dt = parsed.astimezone(BJT)
+        except ValueError:
+            # Backward compatibility for older records that stored "HH:MM:SS".
+            if re.fullmatch(r"\d{2}:\d{2}:\d{2}", value):
+                return f"\u4eca\u5929 {value}"
+            return value
+
+    if dt is None:
+        return ""
+
+    time_part = dt.strftime("%H:%M:%S")
+    if dt.date() == now.date():
+        return f"\u4eca\u5929 {time_part}"
+    if dt.date() == (now.date() - timedelta(days=1)):
+        return f"\u6628\u5929 {time_part}"
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _build_chat_completions_url(base_url: str) -> str:
@@ -300,9 +347,18 @@ def _render_assistant_with_citation(answer: str, citations: list[dict[str, str]]
     if marker:
         ref_line = (
             "<br><br>"
-            '<span class="citation-prefix">'
-            "\u77e5\u8bc6\u5e93\u4e2d\u7684\u76f8\u5173\u95ee\u7b54\uff1a"
+            '<div class="citation-header">'
+            '<span class="citation-quote-icon" aria-hidden="true">'
+            '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" '
+            'xmlns="http://www.w3.org/2000/svg">'
+            '<path d="M7.17 6A5.01 5.01 0 0 0 2 11v7h7v-7H6.83a3 3 0 0 1 2.34-2.91L8.5 6h-1.33Zm9 0A5.01 5.01 0 0 0 11 11v7h7v-7h-2.17a3 3 0 0 1 2.34-2.91L17.5 6h-1.33Z"/>'
+            "</svg>"
             "</span>"
+            '<span class="citation-prefix">'
+            "\u77e5\u8bc6\u5e93\u4e2d\u7684\u76f8\u5173\u95ee\u7b54"
+            "</span>"
+            '<span class="citation-divider" aria-hidden="true"></span>'
+            "</div>"
             '<div class="citation-list">'
             f"{marker}"
             "</div>"
@@ -324,6 +380,20 @@ def _render_citation_styles() -> None:
 }
 .citation-list {
   margin-top: 6px;
+}
+.citation-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.citation-quote-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #1f6feb;
+  font-size: 1em; /* roughly equal to Chinese character size */
+  line-height: 1;
 }
 .citation-item {
   position: relative;
@@ -373,6 +443,17 @@ def _render_citation_styles() -> None:
 .citation-prefix {
   font-weight: 600;
   color: var(--text-color, #24292f);
+}
+.citation-divider {
+  flex: 1;
+  height: 1px;
+  background: rgba(128, 128, 128, 0.55);
+  transform: translateY(1px);
+}
+.chat-time {
+  margin-top: 6px;
+  font-size: 0.78rem;
+  opacity: 0.65;
 }
 </style>
         """,
@@ -525,6 +606,7 @@ def render_chat_page() -> None:
                 "content": WELCOME_MESSAGE,
                 "citations": [],
                 "raw_response": None,
+                "time": _now_time_iso(),
             }
         )
 
@@ -542,6 +624,12 @@ def render_chat_page() -> None:
                         st.json(raw)
             else:
                 st.markdown(msg.get("content", ""))
+            msg_time = _format_chat_time(msg.get("time"))
+            if msg_time:
+                st.markdown(
+                    f'<div class="chat-time">{html.escape(msg_time)}</div>',
+                    unsafe_allow_html=True,
+                )
 
     user_text = st.chat_input("\u8bf7\u8f93\u5165\u95ee\u9898\uff0c\u6309 Enter \u53d1\u9001\u2026")
     if not user_text:
@@ -565,12 +653,15 @@ def render_chat_page() -> None:
         with st.expander("\u67e5\u770b\u8be5\u8f6e API \u539f\u59cb\u54cd\u5e94", expanded=False):
             st.json(raw_response)
 
-    st.session_state.chat_messages.append({"role": "user", "content": cleaned})
+    st.session_state.chat_messages.append(
+        {"role": "user", "content": cleaned, "time": _now_time_iso()}
+    )
     st.session_state.chat_messages.append(
         {
             "role": "assistant",
             "content": answer,
             "citations": citations,
             "raw_response": raw_response,
+            "time": _now_time_iso(),
         }
     )
