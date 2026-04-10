@@ -260,36 +260,56 @@ def _extract_cite_content_map(data: dict[str, Any]) -> dict[str, str]:
 
 
 def _build_reference_marker(citations: list[dict[str, str]]) -> str:
-    """Build numbered markers [1][2]... with custom hover cards."""
+    """Build numbered Q lines + hover cards for A text."""
     if not citations:
         return ""
 
-    tags: list[str] = []
+    rows: list[str] = []
     for i, c in enumerate(citations, 1):
-        source_name = c.get("sourceName", "").strip()
-        source = c.get("source", "").strip()
-        source_id = c.get("sourceId", "").strip()
-        content = c.get("content", "").strip()
+        source_name = (c.get("sourceName", "") or "").strip()
+        source = (c.get("source", "") or "").strip()
+        source_id = (c.get("sourceId", "") or "").strip()
+        q_text = (c.get("q", "") or "").strip()
+        a_text = (c.get("a", "") or "").strip()
+        content_fallback = (c.get("content", "") or "").strip()
 
         source_text = source_name or source or source_id or "Unknown Source"
-        content_text = content or "(No content returned by API)"
+        # Question shown inline; answer only in hover card.
+        question_text = q_text or content_fallback or "(No question text)"
 
-        tags.append(
-            '<span class="citation-wrap">'
+        answer_text = a_text or "(No answer returned by API)"
+        # Remove blank lines inside answer while preserving normal lines.
+        answer_text = re.sub(r"\n\s*\n+", "\n", answer_text).strip()
+
+        rows.append(
+            '<div class="citation-item">'
             f'<span class="citation-tag">[{i}]</span>'
+            f'<span class="citation-question">{html.escape(question_text)}</span>'
             '<span class="citation-card">'
             f'<span class="citation-source">Source: {html.escape(source_text)}</span>'
-            f'<span class="citation-content">{html.escape(content_text)}</span>'
+            f'<span class="citation-content">{html.escape(answer_text)}</span>'
             "</span>"
-            "</span>"
+            "</div>"
         )
-    return "".join(tags)
+    return "".join(rows)
 
 
 def _render_assistant_with_citation(answer: str, citations: list[dict[str, str]]) -> None:
     safe_answer = html.escape(answer).replace("\n", "<br>")
     marker = _build_reference_marker(citations)
-    st.markdown(f"{safe_answer}{marker}", unsafe_allow_html=True)
+    if marker:
+        ref_line = (
+            "<br><br>"
+            '<span class="citation-prefix">'
+            "\u77e5\u8bc6\u5e93\u4e2d\u7684\u76f8\u5173\u95ee\u7b54\uff1a"
+            "</span>"
+            '<div class="citation-list">'
+            f"{marker}"
+            "</div>"
+        )
+    else:
+        ref_line = ""
+    st.markdown(f"{safe_answer}{ref_line}", unsafe_allow_html=True)
 
 
 def _render_citation_styles() -> None:
@@ -302,13 +322,25 @@ def _render_citation_styles() -> None:
   display: inline-block;
   margin-left: 4px;
 }
+.citation-list {
+  margin-top: 6px;
+}
+.citation-item {
+  position: relative;
+  display: block;
+  margin: 4px 0;
+}
 .citation-tag {
-  cursor: help;
+  cursor: pointer;
   font-weight: 700;
   color: #1f6feb;
+  margin-right: 6px;
+}
+.citation-question {
+  cursor: pointer;
 }
 .citation-card {
-  display: none;
+  display: none !important;
   position: absolute;
   top: 1.6em;
   left: 0;
@@ -321,10 +353,10 @@ def _render_citation_styles() -> None:
   border-radius: 12px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
   padding: 10px 12px;
-  white-space: normal;
+  white-space: pre-wrap;
 }
-.citation-wrap:hover .citation-card {
-  display: block;
+.citation-item:hover > .citation-card {
+  display: block !important;
 }
 .citation-source {
   display: block;
@@ -334,10 +366,13 @@ def _render_citation_styles() -> None:
 }
 .citation-content {
   display: block;
-  max-height: 300px;
-  overflow: auto;
   line-height: 1.45;
   word-break: break-word;
+  white-space: pre-wrap;
+}
+.citation-prefix {
+  font-weight: 600;
+  color: var(--text-color, #24292f);
 }
 </style>
         """,
