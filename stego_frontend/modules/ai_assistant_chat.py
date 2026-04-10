@@ -76,23 +76,58 @@ def _normalize_messages_for_api(raw: list[dict[str, Any]]) -> list[dict[str, str
 
 
 def _extract_citations(data: dict[str, Any]) -> list[dict[str, str]]:
-    """Extract citations ONLY from historyPreview <Cites> blocks."""
-    cite_map = _extract_cite_content_map(data)
+    """Extract quoteList from responseData modules."""
     refs: list[dict[str, str]] = []
-    for cite_id, item in cite_map.items():
-        refs.append(
-            {
-                "id": cite_id,
-                "sourceName": item.get("sourceName", ""),
-                "content": item.get("content", ""),
-            }
-        )
+    seen: set[str] = set()
+
+    # FastGPT detail response may only include quote id/source metadata in quoteList.
+    # We can backfill detailed cite content from historyPreview <Cites> blocks.
+    cite_content_map = _extract_cite_content_map(data)
+
+    response_data = data.get("responseData")
+    if not isinstance(response_data, list):
+        return refs
+
+    for module in response_data:
+        if not isinstance(module, dict):
+            continue
+        quote_list = module.get("quoteList")
+        if not isinstance(quote_list, list):
+            continue
+        for quote in quote_list:
+            if not isinstance(quote, dict):
+                continue
+            quote_id = str(quote.get("id", "")).strip()
+            if quote_id and quote_id in seen:
+                continue
+            if quote_id:
+                seen.add(quote_id)
+
+            q = str(quote.get("q", "")).strip()
+            a = str(quote.get("a", "")).strip()
+            source = str(quote.get("source", "")).strip()
+            content = str(quote.get("content", "")).strip()
+            if not content and quote_id:
+                content = cite_content_map.get(quote_id, "")
+
+            refs.append(
+                {
+                    "id": quote_id,
+                    "q": q,
+                    "a": a,
+                    "source": source,
+                    "content": content,
+                    "sourceName": str(quote.get("sourceName", "")).strip(),
+                    "sourceId": str(quote.get("sourceId", "")).strip(),
+                    "chunkIndex": str(quote.get("chunkIndex", "")).strip(),
+                }
+            )
     return refs
 
 
-def _extract_cite_content_map(data: dict[str, Any]) -> dict[str, dict[str, str]]:
-    """Parse historyPreview <Cites> blocks and map id -> {sourceName, content}."""
-    mapping: dict[str, dict[str, str]] = {}
+def _extract_cite_content_map(data: dict[str, Any]) -> dict[str, str]:
+    """Parse chatNode.historyPreview <Cites> blocks and map id -> content."""
+    mapping: dict[str, str] = {}
     response_data = data.get("responseData")
     if not isinstance(response_data, list):
         return mapping
@@ -116,123 +151,101 @@ def _extract_cite_content_map(data: dict[str, Any]) -> dict[str, dict[str, str]]
             # FastGPT often separates cite json blocks by "------"
             blocks = [b.strip() for b in cites_text.split("------") if b.strip()]
             for block in blocks:
-                parsed = _parse_cite_block(block)
-                cite_id = parsed.get("id", "")
-                content = parsed.get("content", "")
-                source_name = parsed.get("sourceName", "")
+                try:
+                    obj = json.loads(block)
+                except Exception:
+                    continue
+                cite_id = str(obj.get("id", "")).strip()
+                content = str(obj.get("content", "")).strip()
                 if cite_id and content and cite_id not in mapping:
-                    mapping[cite_id] = {
-                        "sourceName": source_name,
-                        "content": content,
-                    }
+                    mapping[cite_id] = content
     return mapping
 
 
-def _decode_json_like_string(raw: str) -> str:
-    """Decode common JSON-escaped sequences without harming plain Unicode text."""
-    text = raw
-    text = text.replace(r"\n", "\n").replace(r"\r", "\r").replace(r"\t", "\t")
-    text = text.replace(r"\/", "/").replace(r"\\", "\\").replace(r"\"", '"')
-    text = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), text)
-    text = re.sub(r"\\U([0-9a-fA-F]{8})", lambda m: chr(int(m.group(1), 16)), text)
-    return text
-
-
-def _extract_json_like_field(block: str, key: str) -> str:
-    """Extract string field value from a JSON-like block (tolerant mode)."""
-    m = re.search(rf'"{re.escape(key)}"\s*:\s*"', block)
-    if not m:
-        return ""
-    i = m.end()
-    out: list[str] = []
-    escaped = False
-    while i < len(block):
-        ch = block[i]
-        if escaped:
-            out.append(ch)
-            escaped = False
-            i += 1
-            continue
-        if ch == "\\":
-            out.append("\\")
-            escaped = True
-            i += 1
-            continue
-        if ch == '"':
-            break
-        out.append(ch)
-        i += 1
-    return _decode_json_like_string("".join(out)).strip()
-
-
-def _parse_cite_block(block: str) -> dict[str, str]:
-    """Parse one cite block into id/sourceName/content, tolerant of non-strict JSON."""
-    # First try strict JSON.
-    try:
-        obj = json.loads(block)
-        cite_id = str(obj.get("id", "")).strip()
-        source_name = str(obj.get("sourceName", "")).strip()
-        content = str(obj.get("content", "")).strip()
-        return {"id": cite_id, "sourceName": source_name, "content": content}
-    except Exception:
-        pass
-
-    # Fallback parser for JSON-like blocks in prompt text.
-    return {
-        "id": _extract_json_like_field(block, "id"),
-        "sourceName": _extract_json_like_field(block, "sourceName"),
-        "content": _extract_json_like_field(block, "content"),
-    }
-
-
 def _build_reference_marker(citations: list[dict[str, str]]) -> str:
-    """Build numbered markers [1][2]... each with a custom hover card."""
+    """Build numbered markers [1][2]... with custom hover cards."""
     if not citations:
         return ""
 
-    style = (
-        "<style>"
-        ".cite-wrap{position:relative;display:inline-block;margin-left:4px;}"
-        ".cite-tag{cursor:help;font-weight:700;color:#1f4e8c;}"
-        ".cite-pop{display:none;position:absolute;left:0;top:1.6em;z-index:1000;"
-        "max-width:min(45vw,560px);min-width:260px;background:#ffffff;color:#111827;"
-        "border:1px solid #d1d5db;border-radius:10px;padding:10px 12px;"
-        "box-shadow:0 8px 24px rgba(0,0,0,.16);white-space:pre-wrap;line-height:1.45;"
-        "max-height:45vh;overflow-y:auto;}"
-        ".cite-wrap:hover .cite-pop{display:block;}"
-        "</style>"
-    )
-
     tags: list[str] = []
     for i, c in enumerate(citations, 1):
-        source_name = c.get("sourceName", "") or c.get("sourceId", "") or c.get("source", "")
-        content = c.get("content", "")
+        source_name = c.get("sourceName", "").strip()
+        source = c.get("source", "").strip()
+        source_id = c.get("sourceId", "").strip()
+        content = c.get("content", "").strip()
 
-        lines: list[str] = []
-        lines.append(f"source: {source_name or '(unknown)'}")
-        if content:
-            lines.append(f"content:\n{content}")
-        else:
-            lines.append("content:\n(no content returned)")
-        popup = html.escape("\n\n".join(lines))
+        source_text = source_name or source or source_id or "Unknown Source"
+        content_text = content or "(No content returned by API)"
+
         tags.append(
-            '<span class="cite-wrap">'
-            f'<span class="cite-tag">[{i}]</span>'
-            f'<span class="cite-pop">{popup}</span>'
+            '<span class="citation-wrap">'
+            f'<span class="citation-tag">[{i}]</span>'
+            '<span class="citation-card">'
+            f'<span class="citation-source">Source: {html.escape(source_text)}</span>'
+            f'<span class="citation-content">{html.escape(content_text)}</span>'
+            "</span>"
             "</span>"
         )
-    return style + "".join(tags)
+    return "".join(tags)
 
 
 def _render_assistant_with_citation(answer: str, citations: list[dict[str, str]]) -> None:
     safe_answer = html.escape(answer).replace("\n", "<br>")
     marker = _build_reference_marker(citations)
-    html_block = f"<div>{safe_answer}{marker}</div>"
-    # st.html renders style + custom hover reliably in Streamlit 1.56.
-    if hasattr(st, "html"):
-        st.html(html_block)
-    else:
-        st.markdown(html_block, unsafe_allow_html=True)
+    st.markdown(f"{safe_answer}{marker}", unsafe_allow_html=True)
+
+
+def _render_citation_styles() -> None:
+    """Render shared CSS for citation hover cards."""
+    st.markdown(
+        """
+<style>
+.citation-wrap {
+  position: relative;
+  display: inline-block;
+  margin-left: 4px;
+}
+.citation-tag {
+  cursor: help;
+  font-weight: 700;
+  color: #1f6feb;
+}
+.citation-card {
+  display: none;
+  position: absolute;
+  top: 1.6em;
+  left: 0;
+  z-index: 9999;
+  width: min(46vw, 560px);
+  max-width: 46vw;
+  background: var(--background-color, #ffffff);
+  color: var(--text-color, #24292f);
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 10px 12px;
+  white-space: normal;
+}
+.citation-wrap:hover .citation-card {
+  display: block;
+}
+.citation-source {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+.citation-content {
+  display: block;
+  max-height: 300px;
+  overflow: auto;
+  line-height: 1.45;
+  word-break: break-word;
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def call_ai_assistant(query: str) -> dict[str, Any]:
@@ -365,6 +378,7 @@ def render_sidebar() -> None:
 def render_chat_page() -> None:
     st.title("AI \u52a9\u6559\u95ee\u7b54")
     st.caption("\u57fa\u4e8e FastGPT \u7684\u5bf9\u8bdd\u5f0f\u52a9\u6559")
+    _render_citation_styles()
 
     # Always show the configured assistant opening sentence at session start.
     if not st.session_state.chat_messages:
