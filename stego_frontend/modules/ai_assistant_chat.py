@@ -12,6 +12,8 @@ from typing import Any
 import requests
 import streamlit as st
 
+TARGET_DATASET_ID = "69d75c92248968454034e3f1"
+
 WELCOME_MESSAGE = (
     "\u4f60\u597d\uff0c\u6211\u662f\u300a\u4fe1\u606f\u9690\u85cf\u300b"
     "\u8fd9\u95e8\u8bfe\u7a0b\u7684\u52a9\u6559\u8001\u5e08\uff0c"
@@ -27,6 +29,8 @@ def init_state() -> None:
         st.session_state.chat_messages = []
     if "fastgpt_last_response" not in st.session_state:
         st.session_state.fastgpt_last_response = None
+    if "fastgpt_data_detail_cache" not in st.session_state:
+        st.session_state.fastgpt_data_detail_cache = {}
 
     if "fastgpt_api_key" not in st.session_state:
         st.session_state.fastgpt_api_key = os.getenv(
@@ -120,9 +124,102 @@ def _extract_citations(data: dict[str, Any]) -> list[dict[str, str]]:
                     "sourceName": str(quote.get("sourceName", "")).strip(),
                     "sourceId": str(quote.get("sourceId", "")).strip(),
                     "chunkIndex": str(quote.get("chunkIndex", "")).strip(),
+                    "datasetId": str(quote.get("datasetId", "")).strip(),
                 }
             )
     return refs
+
+
+def _build_api_root(base_url: str) -> str:
+    """Build FastGPT API root, e.g. https://xxx/api."""
+    b = base_url.strip().rstrip("/")
+    lowered = b.lower()
+
+    if lowered.endswith("/api"):
+        return b
+    if lowered.endswith("/api/v1"):
+        return b[: -len("/v1")]
+    if lowered.endswith("/api/v1/chat/completions"):
+        return b[: -len("/v1/chat/completions")]
+    if lowered.endswith("/v1/chat/completions"):
+        return b[: -len("/v1/chat/completions")] + "/api"
+    if lowered.endswith("/v1"):
+        return b[: -len("/v1")] + "/api"
+    if lowered.endswith("/chat/completions"):
+        return b[: -len("/chat/completions")]
+    return f"{b}/api"
+
+
+def _fetch_dataset_data_detail(
+    *,
+    api_key: str,
+    base_url: str,
+    data_id: str,
+) -> dict[str, Any] | None:
+    """Fetch one data record by id via /core/dataset/data/detail."""
+    if not data_id:
+        return None
+
+    cache: dict[str, Any] = st.session_state.get("fastgpt_data_detail_cache", {})
+    if data_id in cache:
+        return cache[data_id]
+
+    api_root = _build_api_root(base_url)
+    url = f"{api_root}/core/dataset/data/detail?id={data_id}"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception:
+        cache[data_id] = None
+        st.session_state.fastgpt_data_detail_cache = cache
+        return None
+
+    data = payload.get("data")
+    cache[data_id] = data if isinstance(data, dict) else None
+    st.session_state.fastgpt_data_detail_cache = cache
+    return cache[data_id]
+
+
+def _enrich_citations_with_dataset_data(
+    citations: list[dict[str, str]],
+    *,
+    api_key: str,
+    base_url: str,
+) -> list[dict[str, str]]:
+    """Backfill citation content from dataset data detail (q/a)."""
+    enriched: list[dict[str, str]] = []
+    for c in citations:
+        item = dict(c)
+        data_id = item.get("id", "").strip()
+        dataset_id = item.get("datasetId", "").strip()
+
+        # Only fetch target dataset records as requested.
+        if data_id and (not dataset_id or dataset_id == TARGET_DATASET_ID):
+            detail = _fetch_dataset_data_detail(
+                api_key=api_key,
+                base_url=base_url,
+                data_id=data_id,
+            )
+            if isinstance(detail, dict):
+                q = str(detail.get("q", "")).strip()
+                a = str(detail.get("a", "")).strip()
+                if q and not item.get("q"):
+                    item["q"] = q
+                if a and not item.get("a"):
+                    item["a"] = a
+                qa_content = q + (f"\n\n{a}" if a else "")
+                if qa_content:
+                    item["content"] = qa_content
+                src_name = str(detail.get("sourceName", "")).strip()
+                if src_name:
+                    item["sourceName"] = src_name
+                src_id = str(detail.get("sourceId", "")).strip()
+                if src_id:
+                    item["sourceId"] = src_id
+        enriched.append(item)
+    return enriched
 
 
 def _extract_cite_content_map(data: dict[str, Any]) -> dict[str, str]:
@@ -310,6 +407,11 @@ def call_ai_assistant(query: str) -> dict[str, Any]:
         }
 
     citations = _extract_citations(data)
+    citations = _enrich_citations_with_dataset_data(
+        citations,
+        api_key=api_key,
+        base_url=base_url,
+    )
     st.session_state.fastgpt_last_response = data
 
     answer = ""
