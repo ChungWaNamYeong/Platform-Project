@@ -2,6 +2,8 @@
 """Streamlit home: entry to AI assistant and experiment modules."""
 import streamlit as st
 
+from stego_frontend.modules import auth
+
 
 def main() -> None:
     st.set_page_config(
@@ -10,6 +12,8 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    auth.require_login()
+    user = st.session_state.get("current_user") or {}
 
     st.title("\u4fe1\u606f\u9690\u85cf\u5b9e\u9a8c\u5e73\u53f0")
     st.write("\u8bf7\u9009\u62e9\u8981\u8fdb\u5165\u7684\u6a21\u5757\uff1a")
@@ -36,6 +40,15 @@ def main() -> None:
         st.page_link(
             "pages/2_\u5b9e\u9a8c\u6a21\u5757.py",
             label="\u8fdb\u5165 \u5b9e\u9a8c\u6a21\u5757",
+        )
+
+    if user.get("is_superuser"):
+        st.divider()
+        st.subheader("\u7528\u6237\u7ba1\u7406")
+        st.write("\u4ec5\u8d85\u7ea7\u7ba1\u7406\u5458\u53ef\u8bbf\u95ee\u3002")
+        st.page_link(
+            "pages/3_\u7528\u6237\u7ba1\u7406.py",
+            label="\u8fdb\u5165 \u7528\u6237\u7ba1\u7406",
         )
 
     st.sidebar.info(

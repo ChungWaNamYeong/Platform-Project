@@ -2,6 +2,7 @@
 """AI assistant chat page (FastGPT)."""
 import streamlit as st
 
+from stego_frontend.modules import auth
 from stego_frontend.modules import ai_assistant_chat
 
 
@@ -12,6 +13,7 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    auth.require_login()
     ai_assistant_chat.init_state()
     ai_assistant_chat.render_sidebar()
     ai_assistant_chat.render_chat_page()

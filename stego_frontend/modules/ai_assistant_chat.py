@@ -13,6 +13,8 @@ from typing import Any
 import requests
 import streamlit as st
 
+from stego_frontend.modules import auth
+
 TARGET_DATASET_ID = "69d75c92248968454034e3f1"
 
 WELCOME_MESSAGE = (
@@ -48,6 +50,10 @@ def init_state() -> None:
 
     if "fastgpt_chat_id" not in st.session_state:
         st.session_state.fastgpt_chat_id = ""
+    if "active_chat_session_id" not in st.session_state:
+        st.session_state.active_chat_session_id = None
+    if "chat_loaded_for_session" not in st.session_state:
+        st.session_state.chat_loaded_for_session = None
 
 
 def _now_time_iso() -> str:
@@ -92,6 +98,116 @@ def _format_chat_time(raw_time: Any) -> str:
     if dt.date() == (now.date() - timedelta(days=1)):
         return f"\u6628\u5929 {time_part}"
     return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _list_sessions() -> list[dict[str, Any]]:
+    result = auth.api_request("GET", "/chat/sessions")
+    if not result["ok"] or not isinstance(result.get("data"), list):
+        return []
+    return result["data"]
+
+
+def _create_session(title: str = "", fastgpt_chat_id: str = "") -> dict[str, Any] | None:
+    payload = {"title": title, "fastgpt_chat_id": fastgpt_chat_id}
+    result = auth.api_request("POST", "/chat/sessions", json_data=payload)
+    if not result["ok"] or not isinstance(result.get("data"), dict):
+        return None
+    return result["data"]
+
+
+def _get_messages(session_id: int) -> list[dict[str, Any]]:
+    result = auth.api_request("GET", f"/chat/sessions/{session_id}/messages")
+    if not result["ok"] or not isinstance(result.get("data"), list):
+        return []
+    return result["data"]
+
+
+def _save_message(
+    session_id: int,
+    *,
+    role: str,
+    content: str,
+    citations: list[dict[str, Any]] | None = None,
+    raw_response: dict[str, Any] | None = None,
+) -> None:
+    payload = {
+        "role": role,
+        "content": content,
+        "citations_json": citations or [],
+        "raw_response_json": raw_response or {},
+    }
+    auth.api_request("POST", f"/chat/sessions/{session_id}/messages", json_data=payload)
+
+
+def _activate_session(session: dict[str, Any]) -> None:
+    session_id = session.get("id")
+    if not session_id:
+        return
+    st.session_state.active_chat_session_id = int(session_id)
+    st.session_state.fastgpt_chat_id = str(session.get("fastgpt_chat_id", "") or "")
+    st.session_state.chat_loaded_for_session = None
+
+
+def _ensure_active_session() -> int | None:
+    active_id = st.session_state.get("active_chat_session_id")
+    if isinstance(active_id, int):
+        return active_id
+
+    sessions = _list_sessions()
+    if sessions:
+        _activate_session(sessions[0])
+        return st.session_state.active_chat_session_id
+
+    created = _create_session(
+        title="\u65b0\u5bf9\u8bdd",
+        fastgpt_chat_id=(st.session_state.get("fastgpt_chat_id") or "").strip(),
+    )
+    if created:
+        _activate_session(created)
+    return st.session_state.get("active_chat_session_id")
+
+
+def _ensure_session_loaded() -> int | None:
+    session_id = _ensure_active_session()
+    if not session_id:
+        return None
+
+    if st.session_state.get("chat_loaded_for_session") == session_id:
+        return session_id
+
+    records = _get_messages(session_id)
+    st.session_state.chat_messages = [
+        {
+            "role": str(item.get("role", "assistant")),
+            "content": str(item.get("content", "")),
+            "citations": item.get("citations_json", []) or [],
+            "raw_response": item.get("raw_response_json", {}) or {},
+            "time": item.get("created_at", ""),
+        }
+        for item in records
+    ]
+    st.session_state.chat_loaded_for_session = session_id
+
+    # 新会话首次进入时补一条助教开场白，并落库到当前用户的会话里。
+    if not st.session_state.chat_messages:
+        welcome_time = _now_time_iso()
+        st.session_state.chat_messages.append(
+            {
+                "role": "assistant",
+                "content": WELCOME_MESSAGE,
+                "citations": [],
+                "raw_response": None,
+                "time": welcome_time,
+            }
+        )
+        _save_message(
+            session_id,
+            role="assistant",
+            content=WELCOME_MESSAGE,
+            citations=[],
+            raw_response={},
+        )
+    return session_id
 
 
 def _build_chat_completions_url(base_url: str) -> str:
@@ -545,6 +661,7 @@ def call_ai_assistant(query: str) -> dict[str, Any]:
 
 
 def render_sidebar() -> None:
+    session_id = _ensure_session_loaded()
     st.sidebar.header("FastGPT \u914d\u7f6e")
     st.sidebar.text_input(
         "API Key\uff08\u5e94\u7528\u4e13\u5c5e\uff09",
@@ -577,12 +694,28 @@ def render_sidebar() -> None:
         st.session_state.chat_messages = []
         st.session_state.fastgpt_chat_id = ""
         st.session_state.fastgpt_last_response = None
+        created = _create_session(title="\u65b0\u5bf9\u8bdd", fastgpt_chat_id="")
+        if created:
+            _activate_session(created)
         st.rerun()
 
     if st.sidebar.button("\u65b0\u5efa chatId\uff08\u670d\u52a1\u7aef\u8bb0\u5fc6\uff09", use_container_width=True):
-        st.session_state.fastgpt_chat_id = uuid.uuid4().hex[:24]
+        new_chat_id = uuid.uuid4().hex[:24]
+        st.session_state.fastgpt_chat_id = new_chat_id
         st.session_state.chat_messages = []
         st.session_state.fastgpt_last_response = None
+        created = _create_session(
+            title="\u670d\u52a1\u7aef\u8bb0\u5fc6\u4f1a\u8bdd",
+            fastgpt_chat_id=new_chat_id,
+        )
+        if created:
+            _activate_session(created)
+        elif session_id:
+            auth.api_request(
+                "PATCH",
+                f"/chat/sessions/{session_id}",
+                json_data={"fastgpt_chat_id": new_chat_id},
+            )
         st.rerun()
 
     st.sidebar.divider()
@@ -597,18 +730,10 @@ def render_chat_page() -> None:
     st.title("AI \u52a9\u6559\u95ee\u7b54")
     st.caption("\u57fa\u4e8e FastGPT \u7684\u5bf9\u8bdd\u5f0f\u52a9\u6559")
     _render_citation_styles()
-
-    # Always show the configured assistant opening sentence at session start.
-    if not st.session_state.chat_messages:
-        st.session_state.chat_messages.append(
-            {
-                "role": "assistant",
-                "content": WELCOME_MESSAGE,
-                "citations": [],
-                "raw_response": None,
-                "time": _now_time_iso(),
-            }
-        )
+    session_id = _ensure_session_loaded()
+    if not session_id:
+        st.error("\u5f53\u524d\u65e0\u6cd5\u521d\u59cb\u5316\u7528\u6237\u4f1a\u8bdd\uff0c\u8bf7\u68c0\u67e5\u540e\u7aef API \u8fde\u63a5\u3002")
+        return
 
     for msg in st.session_state.chat_messages:
         role = msg.get("role", "user")
@@ -664,4 +789,18 @@ def render_chat_page() -> None:
             "raw_response": raw_response,
             "time": _now_time_iso(),
         }
+    )
+    _save_message(
+        session_id,
+        role="user",
+        content=cleaned,
+        citations=[],
+        raw_response={},
+    )
+    _save_message(
+        session_id,
+        role="assistant",
+        content=answer,
+        citations=citations,
+        raw_response=raw_response if isinstance(raw_response, dict) else {},
     )

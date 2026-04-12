@@ -2,6 +2,8 @@
 """Experiment module placeholder page."""
 import streamlit as st
 
+from stego_frontend.modules import auth
+
 
 def main() -> None:
     st.set_page_config(
@@ -10,6 +12,7 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    auth.require_login()
 
     st.title("\u5b9e\u9a8c\u6a21\u5757\uff08\u9884\u7559\u5165\u53e3\uff09")
     st.info(

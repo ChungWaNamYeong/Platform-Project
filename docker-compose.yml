@@ -24,6 +24,7 @@ services:
       - PYTHONIOENCODING=utf-8
       # So `import stego_frontend` works when Streamlit runs pages under stego_frontend/pages/
       - PYTHONPATH=/app
+      - DJANGO_API_BASE_URL=http://django:8000/api
       - FASTGPT_BASE_URL=https://cloud.fastgpt.io/api
       - FASTGPT_API_KEY=${FASTGPT_API_KEY}
     volumes:
