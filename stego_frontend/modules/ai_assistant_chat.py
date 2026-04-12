@@ -571,9 +571,212 @@ def _render_citation_styles() -> None:
   font-size: 0.78rem;
   opacity: 0.65;
 }
+/* AI 思考占位：四格依次为 机器人 / 放大镜 / 书本 / 问号，其余为圆点 */
+.ai-thinking-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  margin: 0.35rem 0 0.75rem;
+  font-size: 1rem;
+  color: var(--text-color, #24292f);
+  opacity: 0.88;
+}
+.ai-thinking-label-wrap {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 0.15em;
+  font-size: 0.92em;
+  user-select: none;
+  min-width: 19em;
+  min-height: 1.25em;
+}
+.ai-thinking-label-a,
+.ai-thinking-label-b {
+  display: block;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+.ai-thinking-label-a {
+  opacity: 0.75;
+  animation: ai-thinking-label-hide 0.35s ease forwards;
+  animation-delay: 5s;
+}
+.ai-thinking-label-b {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  animation: ai-thinking-label-show 0.35s ease forwards;
+  animation-delay: 5s;
+}
+@keyframes ai-thinking-label-hide {
+  from { opacity: 0.75; }
+  to { opacity: 0; visibility: hidden; }
+}
+@keyframes ai-thinking-label-show {
+  from { opacity: 0; }
+  to { opacity: 0.75; }
+}
+.ai-thinking-slots {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32em;
+}
+.ai-thinking-slot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2em;
+  height: 1.2em;
+  flex-shrink: 0;
+}
+.ai-thinking-slot .ai-thinking-ico,
+.ai-thinking-slot .ai-thinking-dot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.ai-thinking-slot svg {
+  display: block;
+}
+.ai-thinking-dot {
+  font-size: 1.35em;
+  font-weight: 600;
+  opacity: 0.45;
+  letter-spacing: 0;
+}
+@keyframes ai-thinking-ico-0 {
+  0%, 24.99% { opacity: 1; }
+  25%, 100% { opacity: 0; }
+}
+@keyframes ai-thinking-dot-0 {
+  0%, 24.99% { opacity: 0; }
+  25%, 100% { opacity: 1; }
+}
+@keyframes ai-thinking-ico-1 {
+  0%, 24.99% { opacity: 0; }
+  25%, 49.99% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+@keyframes ai-thinking-dot-1 {
+  0%, 24.99% { opacity: 1; }
+  25%, 49.99% { opacity: 0; }
+  50%, 100% { opacity: 1; }
+}
+@keyframes ai-thinking-ico-2 {
+  0%, 49.99% { opacity: 0; }
+  50%, 74.99% { opacity: 1; }
+  75%, 100% { opacity: 0; }
+}
+@keyframes ai-thinking-dot-2 {
+  0%, 49.99% { opacity: 1; }
+  50%, 74.99% { opacity: 0; }
+  75%, 100% { opacity: 1; }
+}
+@keyframes ai-thinking-ico-3 {
+  0%, 74.99% { opacity: 0; }
+  75%, 99.99% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes ai-thinking-dot-3 {
+  0%, 74.99% { opacity: 1; }
+  75%, 99.99% { opacity: 0; }
+  100% { opacity: 1; }
+}
+.ai-thinking-slot:nth-child(1) .ai-thinking-ico {
+  animation: ai-thinking-ico-0 2s linear infinite;
+}
+.ai-thinking-slot:nth-child(1) .ai-thinking-dot {
+  animation: ai-thinking-dot-0 2s linear infinite;
+}
+.ai-thinking-slot:nth-child(2) .ai-thinking-ico {
+  animation: ai-thinking-ico-1 2s linear infinite;
+}
+.ai-thinking-slot:nth-child(2) .ai-thinking-dot {
+  animation: ai-thinking-dot-1 2s linear infinite;
+}
+.ai-thinking-slot:nth-child(3) .ai-thinking-ico {
+  animation: ai-thinking-ico-2 2s linear infinite;
+}
+.ai-thinking-slot:nth-child(3) .ai-thinking-dot {
+  animation: ai-thinking-dot-2 2s linear infinite;
+}
+.ai-thinking-slot:nth-child(4) .ai-thinking-ico {
+  animation: ai-thinking-ico-3 2s linear infinite;
+}
+.ai-thinking-slot:nth-child(4) .ai-thinking-dot {
+  animation: ai-thinking-dot-3 2s linear infinite;
+}
 </style>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def _ai_thinking_placeholder_html() -> str:
+    """HTML for cycling icons + label; label switches client-side after 5s (API call blocks Python)."""
+    # Minimal line icons (24x24), stroke-based.
+    ico_robot = (
+        '<svg viewBox="0 0 24 24" width="1.1em" height="1.1em" fill="none" '
+        'xmlns="http://www.w3.org/2000/svg" stroke="currentColor" '
+        'stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<path d="M9 6V4a3 3 0 0 1 6 0v2"/>'
+        '<rect x="5.5" y="7.5" width="13" height="12" rx="2.5"/>'
+        '<circle cx="9.5" cy="12.5" r="1" fill="currentColor" stroke="none"/>'
+        '<circle cx="14.5" cy="12.5" r="1" fill="currentColor" stroke="none"/>'
+        "<path d=\"M10 15.5h4\"/>"
+        "</svg>"
+    )
+    ico_search = (
+        '<svg viewBox="0 0 24 24" width="1.1em" height="1.1em" fill="none" '
+        'xmlns="http://www.w3.org/2000/svg" stroke="currentColor" '
+        'stroke-width="1.75" stroke-linecap="round" aria-hidden="true">'
+        '<circle cx="10.5" cy="10.5" r="5.25"/>'
+        "<path d=\"M14.6 14.6L19 19\"/>"
+        "</svg>"
+    )
+    ico_book = (
+        '<svg viewBox="0 0 24 24" width="1.1em" height="1.1em" fill="none" '
+        'xmlns="http://www.w3.org/2000/svg" stroke="currentColor" '
+        'stroke-width="1.75" stroke-linecap="round" aria-hidden="true">'
+        '<rect x="5" y="6.5" width="14" height="10" rx="1"/>'
+        "<line x1=\"12\" y1=\"6.5\" x2=\"12\" y2=\"16.5\"/>"
+        "</svg>"
+    )
+    ico_q = (
+        '<svg viewBox="0 0 24 24" width="1.1em" height="1.1em" fill="none" '
+        'xmlns="http://www.w3.org/2000/svg" stroke="currentColor" '
+        'stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<path d="M8.5 9a3.5 3.5 0 1 1 6.4 2c-.6 1-1.9 1.7-1.9 2.8V14"/>'
+        '<circle cx="12" cy="17.5" r="0.9" fill="currentColor" stroke="none"/>'
+        "</svg>"
+    )
+    icons = (ico_robot, ico_search, ico_book, ico_q)
+    slots_html = []
+    for svg in icons:
+        slots_html.append(
+            '<span class="ai-thinking-slot">'
+            f'<span class="ai-thinking-ico">{svg}</span>'
+            '<span class="ai-thinking-dot">\u00b7</span>'
+            "</span>"
+        )
+    label_a = "\u52a9\u6559\u601d\u8003\u4e2d"
+    label_b = "\u6b63\u5728\u75af\u72c2\u67e5\u9605\u8bfe\u7a0b\u77e5\u8bc6\u5e93\uff0c\u8bf7\u7a0d\u540e"
+    return (
+        '<div class="ai-thinking-row" role="status" aria-live="polite">'
+        '<span class="ai-thinking-label-wrap">'
+        f'<span class="ai-thinking-label-a">{html.escape(label_a)}</span>'
+        f'<span class="ai-thinking-label-b">{html.escape(label_b)}</span>'
+        "</span>"
+        '<span class="ai-thinking-slots">'
+        f'{"".join(slots_html)}'
+        "</span>"
+        "</div>"
     )
 
 
@@ -690,7 +893,7 @@ def render_sidebar() -> None:
     )
 
     st.sidebar.divider()
-    if st.sidebar.button("\u6e05\u7a7a\u5bf9\u8bdd", use_container_width=True):
+    if st.sidebar.button("\u6e05\u7a7a\u5bf9\u8bdd", width="stretch"):
         st.session_state.chat_messages = []
         st.session_state.fastgpt_chat_id = ""
         st.session_state.fastgpt_last_response = None
@@ -699,7 +902,7 @@ def render_sidebar() -> None:
             _activate_session(created)
         st.rerun()
 
-    if st.sidebar.button("\u65b0\u5efa chatId\uff08\u670d\u52a1\u7aef\u8bb0\u5fc6\uff09", use_container_width=True):
+    if st.sidebar.button("\u65b0\u5efa chatId\uff08\u670d\u52a1\u7aef\u8bb0\u5fc6\uff09", width="stretch"):
         new_chat_id = uuid.uuid4().hex[:24]
         st.session_state.fastgpt_chat_id = new_chat_id
         st.session_state.chat_messages = []
@@ -768,8 +971,12 @@ def render_chat_page() -> None:
         st.markdown(cleaned)
 
     with st.chat_message("assistant"):
-        with st.spinner("\u52a9\u6559\u601d\u8003\u4e2d\u2026"):
+        thinking_slot = st.empty()
+        thinking_slot.markdown(_ai_thinking_placeholder_html(), unsafe_allow_html=True)
+        try:
             result = call_ai_assistant(cleaned)
+        finally:
+            thinking_slot.empty()
         answer = result.get("answer", "")
         citations = result.get("citations", [])
         raw_response = result.get("raw_response")

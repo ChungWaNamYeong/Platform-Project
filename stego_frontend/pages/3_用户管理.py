@@ -28,7 +28,7 @@ def _render_user_table(users):
     st.caption(f"共 {len(users)} 个用户")
     st.dataframe(
         users,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -45,7 +45,7 @@ def _render_create_user():
         is_staff = st.checkbox("允许后台登录(is_staff)", value=False)
         is_superuser = st.checkbox("超级管理员(is_superuser)", value=False)
         is_active = st.checkbox("启用账户(is_active)", value=True)
-        submit = st.form_submit_button("创建用户", use_container_width=True)
+        submit = st.form_submit_button("创建用户", width="stretch")
 
     if submit:
         payload = {
@@ -86,7 +86,7 @@ def _render_edit_delete(users):
         is_staff = st.checkbox("is_staff", value=bool(selected.get("is_staff")))
         is_superuser = st.checkbox("is_superuser", value=bool(selected.get("is_superuser")))
         is_active = st.checkbox("is_active", value=bool(selected.get("is_active", True)))
-        submit_update = st.form_submit_button("保存修改", use_container_width=True)
+        submit_update = st.form_submit_button("保存修改", width="stretch")
 
     if submit_update:
         payload = {
@@ -109,7 +109,7 @@ def _render_edit_delete(users):
 
     st.divider()
     confirm = st.checkbox("确认删除该用户（不可恢复）", value=False)
-    if st.button("删除用户", type="primary", use_container_width=True, disabled=not confirm):
+    if st.button("删除用户", type="primary", width="stretch", disabled=not confirm):
         result = auth.api_request("DELETE", f"/users/{selected['id']}")
         if result["ok"]:
             st.success("删除成功")
