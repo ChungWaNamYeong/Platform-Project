@@ -9,6 +9,8 @@ from typing import Any
 import requests
 import streamlit as st
 
+from stego_frontend.modules import branding
+
 
 def _extract_api_error(payload: Any) -> str:
     """将后端返回的各种错误结构格式化为可读字符串。"""
@@ -199,6 +201,7 @@ def _logout_local() -> None:
 
 
 def render_auth_sidebar() -> None:
+    branding.render_sidebar_brand()
     st.sidebar.header("账户")
     st.sidebar.text_input("后端 API Base URL", key="platform_api_base_url")
     user = st.session_state.get("current_user")
@@ -225,6 +228,7 @@ def require_login() -> bool:
     if st.session_state.get("current_user"):
         return True
 
+    branding.render_main_logo_title_centered()
     st.title("用户登录")
     login_tab, register_tab = st.tabs(["登录", "注册"])
 

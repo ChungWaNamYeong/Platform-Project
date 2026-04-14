@@ -3,6 +3,7 @@
 import streamlit as st
 
 from stego_frontend.modules import auth
+from stego_frontend.modules import branding
 
 
 def main() -> None:
@@ -15,7 +16,7 @@ def main() -> None:
     auth.require_login()
     user = st.session_state.get("current_user") or {}
 
-    st.title("\u4fe1\u606f\u9690\u85cf\u5b9e\u9a8c\u5e73\u53f0")
+    branding.render_main_logo_title_centered()
     st.write("\u8bf7\u9009\u62e9\u8981\u8fdb\u5165\u7684\u6a21\u5757\uff1a")
 
     col1, col2 = st.columns(2)

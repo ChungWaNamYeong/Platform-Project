@@ -14,6 +14,7 @@ import requests
 import streamlit as st
 
 from stego_frontend.modules import auth
+from stego_frontend.modules import branding
 
 TARGET_DATASET_ID = "69d75c92248968454034e3f1"
 
@@ -930,7 +931,7 @@ def render_sidebar() -> None:
 
 
 def render_chat_page() -> None:
-    st.title("AI \u52a9\u6559\u95ee\u7b54")
+    branding.render_title_with_logo_left("AI \u52a9\u6559\u95ee\u7b54")
     st.caption("\u57fa\u4e8e FastGPT \u7684\u5bf9\u8bdd\u5f0f\u52a9\u6559")
     _render_citation_styles()
     session_id = _ensure_session_loaded()
