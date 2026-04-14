@@ -3,6 +3,7 @@
 import streamlit as st
 
 from stego_frontend.modules import auth
+from stego_frontend.modules import branding
 
 
 def _fetch_users():
@@ -130,7 +131,7 @@ def main() -> None:
         st.error("无权限访问：仅超级管理员可以进入用户管理。")
         st.stop()
 
-    st.title("\u7528\u6237\u7ba1\u7406")
+    branding.render_title_with_logo_left("\u7528\u6237\u7ba1\u7406")
     users = _fetch_users()
     _render_user_table(users)
 

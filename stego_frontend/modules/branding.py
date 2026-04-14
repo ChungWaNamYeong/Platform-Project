@@ -2,8 +2,6 @@
 """Shared logo / title assets for Streamlit pages."""
 from __future__ import annotations
 
-import base64
-import html
 from pathlib import Path
 
 import streamlit as st
@@ -12,26 +10,77 @@ FRONTEND_ROOT = Path(__file__).resolve().parent.parent
 LOGO_TITLE_PATH = FRONTEND_ROOT / "image" / "logo&title.png"
 LOGO_PATH = FRONTEND_ROOT / "image" / "logo.png"
 
-# Title row: Streamlit h1 is ~2.75rem; logo slightly taller for visual balance.
-_TITLE_ROW_FONT_REM = 2.75
-_LOGO_ROW_HEIGHT_REM = 3.15
+# Match Streamlit page title (h1) line height (~88px in default theme).
+_TITLE_LOGO_PX = 88
 
 
-def _logo_png_data_uri() -> str | None:
-    if not LOGO_PATH.is_file():
-        return None
-    raw = LOGO_PATH.read_bytes()
-    b64 = base64.standard_b64encode(raw).decode("ascii")
-    return f"data:image/png;base64,{b64}"
+def _inject_branding_css() -> None:
+    """Re-inject every script run: Streamlit rebuilds the DOM on navigation; session-only inject loses rules."""
+    st.markdown(
+        """
+<style>
+/* st.logo → stretch to remaining sidebar header width (beside collapse control) */
+section[data-testid="stSidebar"] [data-testid="stLogo"] {
+  flex: 1 1 0 !important;
+  min-width: 0 !important;
+  width: auto !important;
+  max-width: none !important;
+  box-sizing: border-box !important;
+  align-self: stretch !important;
+}
+section[data-testid="stSidebar"] [data-testid="stLogo"] a {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+section[data-testid="stSidebar"] [data-testid="stLogo"] img {
+  width: 100% !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: none !important;
+  object-fit: contain !important;
+  display: block !important;
+}
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  align-items: flex-start !important;
+  gap: 0.25rem !important;
+}
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] img {
+  width: 100% !important;
+  height: auto !important;
+  max-height: none !important;
+  object-fit: contain !important;
+  display: block !important;
+}
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] a {
+  width: 100% !important;
+  display: block !important;
+}
+[data-testid="collapsedControl"] img {
+  width: auto !important;
+  height: 2rem !important;
+  max-width: 48px !important;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
 
 
 def render_sidebar_brand() -> None:
+    _inject_branding_css()
     if not LOGO_TITLE_PATH.is_file():
         st.sidebar.caption("品牌图未找到：image/logo&title.png")
         return
     logo_cmd = getattr(st, "logo", None)
     if callable(logo_cmd):
-        # Renders above multipage sidebar navigation; wide image scales to sidebar width.
         kwargs: dict = {
             "image": str(LOGO_TITLE_PATH),
             "size": "large",
@@ -53,41 +102,17 @@ def render_main_logo_title_centered() -> None:
 
 
 def render_title_with_logo_left(title: str) -> None:
-    """Single header row: logo on the left, title on the right, vertically centered."""
-    data_uri = _logo_png_data_uri()
-    if not data_uri:
+    """Logo and title on one row (Streamlit columns), logo fixed ~88px — no fragile HTML/CSS flex."""
+    if not LOGO_PATH.is_file():
         st.title(title)
         st.caption("Logo 未找到：image/logo.png")
         return
-    safe_title = html.escape(title)
-    st.markdown(
-        f"""
-<style>
-.brand-title-row {{
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 0.75rem;
-    margin: 0 0 1rem 0;
-}}
-.brand-title-row img {{
-    height: {_LOGO_ROW_HEIGHT_REM}rem;
-    width: auto;
-    object-fit: contain;
-    flex-shrink: 0;
-}}
-.brand-title-row h1 {{
-    margin: 0;
-    padding: 0;
-    line-height: 1.15;
-    font-size: {_TITLE_ROW_FONT_REM}rem;
-    font-weight: 700;
-}}
-</style>
-<div class="brand-title-row">
-  <img src="{data_uri}" alt="" />
-  <h1>{safe_title}</h1>
-</div>
-""",
-        unsafe_allow_html=True,
+    col_logo, col_title = st.columns(
+        [1, 12],
+        gap="small",
+        vertical_alignment="center",
     )
+    with col_logo:
+        st.image(str(LOGO_PATH), width=_TITLE_LOGO_PX)
+    with col_title:
+        st.title(title)
