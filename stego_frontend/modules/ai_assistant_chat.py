@@ -429,9 +429,14 @@ _KATEX_CSS = f"https://cdn.jsdelivr.net/npm/katex@{_KATEX_VER}/dist/katex.min.cs
 _KATEX_JS = f"https://cdn.jsdelivr.net/npm/katex@{_KATEX_VER}/dist/katex.min.js"
 _KATEX_AUTO = f"https://cdn.jsdelivr.net/npm/katex@{_KATEX_VER}/dist/contrib/auto-render.min.js"
 
-# Whole-paragraph [...] that resembles LaTeX (not markdown links like [](url)).
+# Whole-line [...] that resembles LaTeX (not markdown links like [](url)).
 _BRACKET_LATEX_HINT = re.compile(
-    r"[_^]|[=<>≈]|\\tag|\\frac|\\sum|\\int|\\begin|\\text|\\mathrm|\\left|\\right"
+    r"[_^]|[=<>≈]|\||\\tag|\\frac|\\sum|\\int|\\begin|\\text|\\mathrm|\\left|\\right"
+)
+
+# Parentheses used like LaTeX math, e.g. "(F(J_1))" or "(L_1)" — converted to $...$ for Streamlit.
+_PAREN_MATH_INNER_HINT = re.compile(
+    r"[_^\\]|[=<>≈]|\\[a-zA-Z]+|\|"
 )
 
 
@@ -444,7 +449,59 @@ def _maybe_bracket_line_to_display(line: str) -> str:
     inner = stripped[1:-1].strip()
     if not inner or not _BRACKET_LATEX_HINT.search(inner):
         return line
-    return f"$$\n{inner}\n$$"
+    # Blank lines around display math help Streamlit/markdown parsers treat $$ as a block.
+    return f"\n\n$$\n{inner}\n$$\n\n"
+
+
+def _inner_looks_like_paren_inline_math(inner: str) -> bool:
+    t = inner.strip()
+    if not t or len(t) > 280 or "$" in t:
+        return False
+    if _PAREN_MATH_INNER_HINT.search(t):
+        return True
+    # Single Latin letter / symbol variable, e.g. "(f)" next to Chinese prose.
+    if re.fullmatch(r"[A-Za-z]", t):
+        return True
+    return False
+
+
+def _replace_math_wrapped_parens(plain: str) -> str:
+    """Turn ( ... ) spans that look like LaTeX into $...$ (Streamlit inline math)."""
+    s = plain
+    search_from = 0
+    for _ in range(800):
+        i = s.find("(", search_from)
+        if i == -1:
+            break
+        depth = 0
+        end = -1
+        for j in range(i, len(s)):
+            ch = s[j]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    end = j
+                    break
+        if end == -1:
+            search_from = i + 1
+            continue
+        inner = s[i + 1 : end]
+        if _inner_looks_like_paren_inline_math(inner):
+            s = s[:i] + "$" + inner + "$" + s[end + 1 :]
+            search_from = i + len(inner) + 2
+            continue
+        search_from = i + 1
+    return s
+
+
+def _normalize_paren_style_inline_math(text: str) -> str:
+    """Convert (F(J_1))-style notation to $...$ only outside existing math delimiters."""
+    parts: list[str] = []
+    for chunk, is_math in _split_math_regions(text):
+        parts.append(chunk if is_math else _replace_math_wrapped_parens(chunk))
+    return "".join(parts)
 
 
 def _normalize_bracket_display_paragraphs(text: str) -> str:
@@ -456,6 +513,25 @@ def _normalize_bracket_display_paragraphs(text: str) -> str:
     if ends_with_newline:
         normalized += "\n"
     return normalized
+
+
+def _convert_backslash_math_delimiters(text: str) -> str:
+    """Convert \\(...\\), \\[...\\] to $...$, $$...$$ for Streamlit markdown."""
+    if not text:
+        return text
+    converted = re.sub(
+        r"\\\[\s*(.*?)\s*\\\]",
+        lambda m: f"\n\n$$\n{m.group(1)}\n$$\n\n",
+        text,
+        flags=re.S,
+    )
+    converted = re.sub(
+        r"\\\(\s*(.*?)\s*\\\)",
+        lambda m: f"${m.group(1)}$",
+        converted,
+        flags=re.S,
+    )
+    return converted
 
 
 def _split_math_regions(s: str) -> list[tuple[str, bool]]:
@@ -529,7 +605,9 @@ def _normalize_latex_for_streamlit(text: str) -> str:
     """Normalize model heuristics + Markdown line breaks for Streamlit KaTeX."""
     if not text:
         return text
-    t = _normalize_bracket_display_paragraphs(text)
+    t = _convert_backslash_math_delimiters(text)
+    t = _normalize_bracket_display_paragraphs(t)
+    t = _normalize_paren_style_inline_math(t)
     return _markdown_hard_breaks_outside_math(t)
 
 
