@@ -12,6 +12,7 @@ from typing import Any
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 from stego_frontend.modules import auth
 from stego_frontend.modules import branding
@@ -41,7 +42,7 @@ def init_state() -> None:
     if "fastgpt_api_key" not in st.session_state:
         st.session_state.fastgpt_api_key = os.getenv(
             "FASTGPT_API_KEY",
-            "fastgpt-w0dY1cleY525nDWmvgsKomKv4SVpKc5Z0W5q1jXqVNm0vxumxcmpufHh",
+            "fastgpt-dCcVMmRYuyZP3FCLqOL4iORkm1tjBmlXJsE2ZjwdQMyoatc0ZB7EC7xh8",
         ).strip()
 
     if "fastgpt_base_url" not in st.session_state:
@@ -423,8 +424,187 @@ def _extract_cite_content_map(data: dict[str, Any]) -> dict[str, str]:
     return mapping
 
 
-def _build_reference_marker(citations: list[dict[str, str]]) -> str:
-    """Build numbered Q lines + hover cards for A text."""
+_KATEX_VER = "0.16.11"
+_KATEX_CSS = f"https://cdn.jsdelivr.net/npm/katex@{_KATEX_VER}/dist/katex.min.css"
+_KATEX_JS = f"https://cdn.jsdelivr.net/npm/katex@{_KATEX_VER}/dist/katex.min.js"
+_KATEX_AUTO = f"https://cdn.jsdelivr.net/npm/katex@{_KATEX_VER}/dist/contrib/auto-render.min.js"
+
+# Whole-paragraph [...] that resembles LaTeX (not markdown links like [](url)).
+_BRACKET_LATEX_HINT = re.compile(
+    r"[_^]|[=<>≈]|\\tag|\\frac|\\sum|\\int|\\begin|\\text|\\mathrm|\\left|\\right"
+)
+
+
+def _maybe_bracket_line_to_display(line: str) -> str:
+    stripped = line.strip()
+    if len(stripped) < 3 or not (stripped.startswith("[") and stripped.endswith("]")):
+        return line
+    if "](" in stripped:
+        return line
+    inner = stripped[1:-1].strip()
+    if not inner or not _BRACKET_LATEX_HINT.search(inner):
+        return line
+    return f"$$\n{inner}\n$$"
+
+
+def _normalize_bracket_display_paragraphs(text: str) -> str:
+    if not text:
+        return text
+    ends_with_newline = text.endswith("\n")
+    converted_lines = [_maybe_bracket_line_to_display(line) for line in text.splitlines()]
+    normalized = "\n".join(converted_lines)
+    if ends_with_newline:
+        normalized += "\n"
+    return normalized
+
+
+def _split_math_regions(s: str) -> list[tuple[str, bool]]:
+    """Split into (chunk, is_math) using $$, $, \\[...\\], \\(...\\)."""
+    out: list[tuple[str, bool]] = []
+    buf: list[str] = []
+    i = 0
+    n = len(s)
+
+    def flush_plain() -> None:
+        if buf:
+            out.append(("".join(buf), False))
+            buf.clear()
+
+    while i < n:
+        if i + 1 < n and s[i : i + 2] == "$$":
+            flush_plain()
+            j = s.find("$$", i + 2)
+            if j == -1:
+                out.append((s[i:], True))
+                return out
+            out.append((s[i : j + 2], True))
+            i = j + 2
+            continue
+        if i + 1 < n and s[i] == "\\" and s[i + 1] == "[":
+            flush_plain()
+            j = s.find("\\]", i + 2)
+            if j == -1:
+                out.append((s[i:], True))
+                return out
+            out.append((s[i : j + 2], True))
+            i = j + 2
+            continue
+        if i + 1 < n and s[i] == "\\" and s[i + 1] == "(":
+            flush_plain()
+            j = s.find("\\)", i + 2)
+            if j == -1:
+                out.append((s[i:], True))
+                return out
+            out.append((s[i : j + 2], True))
+            i = j + 2
+            continue
+        if s[i] == "$":
+            flush_plain()
+            j = s.find("$", i + 1)
+            if j == -1:
+                buf.append(s[i:])
+                i = n
+                flush_plain()
+                return out
+            out.append((s[i : j + 1], True))
+            i = j + 1
+            continue
+        buf.append(s[i])
+        i += 1
+    flush_plain()
+    return out
+
+
+def _markdown_hard_breaks_outside_math(text: str) -> str:
+    parts: list[str] = []
+    for chunk, is_math in _split_math_regions(text):
+        if is_math:
+            parts.append(chunk)
+        else:
+            parts.append(re.sub(r"(?<!\n)\n(?!\n)", "  \n", chunk))
+    return "".join(parts)
+
+
+def _normalize_latex_for_streamlit(text: str) -> str:
+    """Normalize model heuristics + Markdown line breaks for Streamlit KaTeX."""
+    if not text:
+        return text
+    t = _normalize_bracket_display_paragraphs(text)
+    return _markdown_hard_breaks_outside_math(t)
+
+
+def _html_escape_preserve_delimited_math(s: str) -> str:
+    """Escape HTML in prose; keep math delimiter regions for KaTeX."""
+    normalized = _normalize_latex_for_streamlit(s)
+    chunks: list[str] = []
+    for chunk, is_math in _split_math_regions(normalized):
+        chunks.append(chunk if is_math else html.escape(chunk, quote=True))
+    return "".join(chunks)
+
+
+def _citation_embed_styles_css() -> str:
+    return """
+body { margin: 0; padding: 0 2px 6px; font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+  color: #24292f; background: transparent; font-size: 15px; }
+.citation-list { margin-top: 6px; }
+.citation-header { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.citation-quote-icon { display: inline-flex; align-items: center; justify-content: center;
+  color: #1f6feb; font-size: 1em; line-height: 1; }
+.citation-item { position: relative; display: block; margin: 4px 0; }
+.citation-tag { cursor: pointer; font-weight: 700; color: #1f6feb; margin-right: 6px; }
+.citation-question { cursor: pointer; word-break: break-word; }
+.citation-card { display: none !important; position: absolute; top: 1.6em; left: 0; z-index: 9999;
+  width: min(92%, 560px); max-width: 560px; background: #ffffff; color: #24292f;
+  border: 1px solid rgba(128, 128, 128, 0.35); border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18); padding: 10px 12px; white-space: pre-wrap; }
+.citation-item:hover > .citation-card { display: block !important; }
+.citation-source { display: block; font-weight: 600; margin-bottom: 8px; word-break: break-word; }
+.citation-content { display: block; line-height: 1.45; word-break: break-word; white-space: pre-wrap; }
+.citation-prefix { font-weight: 600; color: #24292f; }
+.citation-divider { flex: 1; height: 1px; background: rgba(128, 128, 128, 0.55); transform: translateY(1px); }
+.katex-display { margin: 0.5em 0 !important; }
+"""
+
+
+def _citation_katex_shell(inner_body: str) -> str:
+    css = _citation_embed_styles_css()
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<link rel="stylesheet" href="{_KATEX_CSS}"/>
+<style>{css}</style></head><body>
+<div id="citation-root">{inner_body}</div>
+<script src="{_KATEX_JS}"></script>
+<script src="{_KATEX_AUTO}" onload="renderMathInElement(document.getElementById('citation-root'), {{
+  delimiters: [
+    {{left: '$$', right: '$$', display: true}},
+    {{left: '$', right: '$', display: false}},
+    {{left: '\\\\(', right: '\\\\)', display: false}},
+    {{left: '\\\\[', right: '\\\\]', display: true}}
+  ],
+  throwOnError: false
+}});"></script>
+</body></html>"""
+
+
+def _citation_header_inner_html() -> str:
+    return (
+        '<div class="citation-header">'
+        '<span class="citation-quote-icon" aria-hidden="true">'
+        '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" '
+        'xmlns="http://www.w3.org/2000/svg">'
+        '<path d="M7.17 6A5.01 5.01 0 0 0 2 11v7h7v-7H6.83a3 3 0 0 1 2.34-2.91L8.5 6h-1.33Zm9 0A5.01 5.01 0 0 0 11 11v7h7v-7h-2.17a3 3 0 0 1 2.34-2.91L17.5 6h-1.33Z"/>'
+        "</svg>"
+        "</span>"
+        '<span class="citation-prefix">'
+        "\u77e5\u8bc6\u5e93\u4e2d\u7684\u76f8\u5173\u95ee\u7b54"
+        "</span>"
+        '<span class="citation-divider" aria-hidden="true"></span>'
+        "</div>"
+    )
+
+
+def _build_reference_marker_html(citations: list[dict[str, str]]) -> str:
+    """Numbered Q lines + hover cards; math spans preserved for KaTeX."""
     if not citations:
         return ""
 
@@ -438,51 +618,44 @@ def _build_reference_marker(citations: list[dict[str, str]]) -> str:
         content_fallback = (c.get("content", "") or "").strip()
 
         source_text = source_name or source or source_id or "Unknown Source"
-        # Question shown inline; answer only in hover card.
         question_text = q_text or content_fallback or "(No question text)"
 
         answer_text = a_text or "(No answer returned by API)"
-        # Remove blank lines inside answer while preserving normal lines.
         answer_text = re.sub(r"\n\s*\n+", "\n", answer_text).strip()
+
+        question_safe = _html_escape_preserve_delimited_math(question_text)
+        answer_safe = _html_escape_preserve_delimited_math(answer_text)
+        source_safe = html.escape(source_text, quote=True)
 
         rows.append(
             '<div class="citation-item">'
             f'<span class="citation-tag">[{i}]</span>'
-            f'<span class="citation-question">{html.escape(question_text)}</span>'
+            f'<span class="citation-question">{question_safe}</span>'
             '<span class="citation-card">'
-            f'<span class="citation-source">Source: {html.escape(source_text)}</span>'
-            f'<span class="citation-content">{html.escape(answer_text)}</span>'
+            f'<span class="citation-source">Source: {source_safe}</span>'
+            f'<span class="citation-content">{answer_safe}</span>'
             "</span>"
             "</div>"
         )
     return "".join(rows)
 
 
+def _render_citations_katex_iframe(citations: list[dict[str, str]]) -> None:
+    inner = (
+        _citation_header_inner_html()
+        + '<div class="citation-list">'
+        + _build_reference_marker_html(citations)
+        + "</div>"
+    )
+    doc = _citation_katex_shell(inner)
+    height = min(560, max(140, 96 + len(citations) * 88))
+    components.html(doc, height=height, scrolling=True)
+
+
 def _render_assistant_with_citation(answer: str, citations: list[dict[str, str]]) -> None:
-    safe_answer = html.escape(answer).replace("\n", "<br>")
-    marker = _build_reference_marker(citations)
-    if marker:
-        ref_line = (
-            "<br><br>"
-            '<div class="citation-header">'
-            '<span class="citation-quote-icon" aria-hidden="true">'
-            '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" '
-            'xmlns="http://www.w3.org/2000/svg">'
-            '<path d="M7.17 6A5.01 5.01 0 0 0 2 11v7h7v-7H6.83a3 3 0 0 1 2.34-2.91L8.5 6h-1.33Zm9 0A5.01 5.01 0 0 0 11 11v7h7v-7h-2.17a3 3 0 0 1 2.34-2.91L17.5 6h-1.33Z"/>'
-            "</svg>"
-            "</span>"
-            '<span class="citation-prefix">'
-            "\u77e5\u8bc6\u5e93\u4e2d\u7684\u76f8\u5173\u95ee\u7b54"
-            "</span>"
-            '<span class="citation-divider" aria-hidden="true"></span>'
-            "</div>"
-            '<div class="citation-list">'
-            f"{marker}"
-            "</div>"
-        )
-    else:
-        ref_line = ""
-    st.markdown(f"{safe_answer}{ref_line}", unsafe_allow_html=True)
+    st.markdown(_normalize_latex_for_streamlit(answer), unsafe_allow_html=False)
+    if citations:
+        _render_citations_katex_iframe(citations)
 
 
 def _render_citation_styles() -> None:
