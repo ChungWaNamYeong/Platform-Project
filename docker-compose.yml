@@ -8,6 +8,7 @@ services:
       - PYTHONIOENCODING=utf-8
     volumes:
       - ./:/app
+      - /var/run/docker.sock:/var/run/docker.sock
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
              python stego_backend/manage.py migrate &&

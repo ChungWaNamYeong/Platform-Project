@@ -73,3 +73,43 @@ class ChatMessage(models.Model):
 
     def __str__(self):
         return f"{self.session_id}:{self.role}"
+
+
+class SandboxRun(models.Model):
+    """记录实验沙箱运行信息，支持用户隔离与管理员追踪。"""
+
+    STATUS_STARTING = "starting"
+    STATUS_RUNNING = "running"
+    STATUS_STOPPED = "stopped"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = (
+        (STATUS_STARTING, "启动中"),
+        (STATUS_RUNNING, "运行中"),
+        (STATUS_STOPPED, "已停止"),
+        (STATUS_FAILED, "启动失败"),
+    )
+
+    user = models.ForeignKey(
+        Student,
+        on_delete=models.CASCADE,
+        related_name="sandbox_runs",
+        verbose_name="所属用户",
+    )
+    experiment_topic = models.CharField("实验课题", max_length=120)
+    image_name = models.CharField("镜像名称", max_length=200, blank=True, default="")
+    status = models.CharField("状态", max_length=20, choices=STATUS_CHOICES, default=STATUS_STARTING)
+    container_id = models.CharField("容器 ID", max_length=128, blank=True, default="")
+    web_port = models.PositiveIntegerField("Web 端口", blank=True, null=True)
+    launch_error = models.TextField("启动错误", blank=True, default="")
+    started_at = models.DateTimeField("启动时间", blank=True, null=True)
+    stopped_at = models.DateTimeField("停止时间", blank=True, null=True)
+    created_at = models.DateTimeField("创建时间", auto_now_add=True)
+    updated_at = models.DateTimeField("更新时间", auto_now=True)
+
+    class Meta:
+        verbose_name = "实验沙箱运行"
+        verbose_name_plural = "实验沙箱运行"
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.user.username} - {self.experiment_topic} ({self.status})"

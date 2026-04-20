@@ -1,6 +1,10 @@
 from django.urls import path
 
 from .views import (
+    SandboxAdminRunsView,
+    SandboxStartView,
+    SandboxStatusView,
+    SandboxStopView,
     ChatSessionDetailView,
     ChatSessionListCreateView,
     ChatSessionMessagesView,
@@ -29,5 +33,13 @@ urlpatterns = [
         "chat/sessions/<int:session_id>/messages",
         ChatSessionMessagesView.as_view(),
         name="chat-session-messages",
+    ),
+    path("labs/sandbox/start", SandboxStartView.as_view(), name="sandbox-start"),
+    path("labs/sandbox/stop", SandboxStopView.as_view(), name="sandbox-stop"),
+    path("labs/sandbox/status", SandboxStatusView.as_view(), name="sandbox-status"),
+    path(
+        "labs/sandbox/admin/runs",
+        SandboxAdminRunsView.as_view(),
+        name="sandbox-admin-runs",
     ),
 ]

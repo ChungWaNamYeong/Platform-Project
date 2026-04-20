@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
-from .models import ChatMessage, ChatSession, Student
+from .models import ChatMessage, ChatSession, SandboxRun, Student
 
 
 @admin.register(Student)
@@ -26,3 +26,18 @@ class ChatMessageAdmin(admin.ModelAdmin):
     list_display = ("id", "session", "role", "created_at")
     search_fields = ("session__user__username", "content")
     list_filter = ("role", "created_at")
+
+
+@admin.register(SandboxRun)
+class SandboxRunAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "user",
+        "experiment_topic",
+        "status",
+        "container_id",
+        "web_port",
+        "created_at",
+    )
+    search_fields = ("user__username", "experiment_topic", "container_id", "launch_error")
+    list_filter = ("status", "created_at", "stopped_at")
