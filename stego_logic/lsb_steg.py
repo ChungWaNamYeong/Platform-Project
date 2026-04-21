@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Tuple
+import base64
+from io import BytesIO
+from typing import Any, Tuple
 
 import numpy as np
 from PIL import Image
-from plotly.subplots import make_subplots
-import plotly.graph_objects as go
 
 LENGTH_HEADER_BITS = 32
 
@@ -67,13 +67,21 @@ def extract_message(image: Image.Image) -> str:
 
 
 def build_histogram_figure(cover_image: Image.Image, stego_image: Image.Image):
-    """Generate interactive grayscale histogram comparison figure."""
+    """生成可缩放的灰度直方图柱状图与差值图。"""
     try:
         import cv2
     except Exception as exc:  # pragma: no cover - runtime environment dependency
         raise RuntimeError(
             "OpenCV is unavailable in current runtime. "
             "Please install opencv-python-headless or required system libraries."
+        ) from exc
+
+    try:
+        from plotly.subplots import make_subplots  # type: ignore[import-not-found]
+        import plotly.graph_objects as go  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError(
+            "plotly 未安装。请在当前 Python 环境中执行：pip install plotly"
         ) from exc
 
     cover_rgb = _to_rgb_array(cover_image)
@@ -93,7 +101,7 @@ def build_histogram_figure(cover_image: Image.Image, stego_image: Image.Image):
         rows=2,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.2,
+        vertical_spacing=0.28,
         row_heights=[0.56, 0.44],
         subplot_titles=(
             "Normalized Histogram Comparison (cv2.calcHist)",
@@ -102,22 +110,24 @@ def build_histogram_figure(cover_image: Image.Image, stego_image: Image.Image):
     )
 
     fig.add_trace(
-        go.Scatter(
+        go.Bar(
             x=bins,
             y=cover_hist_norm,
-            mode="lines",
-            line={"color": "#2563eb", "width": 2},
+            marker_color="#2563eb",
+            opacity=0.55,
+            marker_line={"width": 0},
             name="Cover (Normalized)",
         ),
         row=1,
         col=1,
     )
     fig.add_trace(
-        go.Scatter(
+        go.Bar(
             x=bins,
             y=stego_hist_norm,
-            mode="lines",
-            line={"color": "#059669", "width": 2},
+            marker_color="#ef4444",
+            opacity=0.55,
+            marker_line={"width": 0},
             name="Stego (Normalized)",
         ),
         row=1,
@@ -127,7 +137,7 @@ def build_histogram_figure(cover_image: Image.Image, stego_image: Image.Image):
         go.Bar(
             x=bins,
             y=diff_hist,
-            marker_color="#ef4444",
+            marker_color="#22c55e",
             opacity=0.82,
             name="Absolute Difference",
         ),
@@ -145,6 +155,7 @@ def build_histogram_figure(cover_image: Image.Image, stego_image: Image.Image):
         height=760,
         hovermode="x unified",
         bargap=0,
+        barmode="overlay",
         margin={"l": 70, "r": 230, "t": 80, "b": 60},
         legend={"orientation": "h", "x": 0, "y": 1.12},
     )
@@ -163,6 +174,54 @@ def build_histogram_figure(cover_image: Image.Image, stego_image: Image.Image):
     )
 
     return fig
+
+
+def _image_to_data_url(image: Image.Image) -> str:
+    """将 PIL 图像编码为可直接嵌入前端的 data URL。"""
+    buf = BytesIO()
+    image.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
+
+
+def _bit_plane_images(image: Image.Image) -> list[dict[str, Any]]:
+    """提取 8 个位平面（bit7 到 bit0）。"""
+    try:
+        import cv2
+    except Exception as exc:  # pragma: no cover - runtime environment dependency
+        raise RuntimeError(
+            "OpenCV is unavailable in current runtime. "
+            "Please install opencv-python-headless or required system libraries."
+        ) from exc
+
+    gray = cv2.cvtColor(_to_rgb_array(image), cv2.COLOR_RGB2GRAY)
+    out: list[dict[str, Any]] = []
+    for bit in range(7, -1, -1):
+        plane = ((gray >> bit) & 1).astype(np.uint8) * 255
+        plane_img = Image.fromarray(plane, mode="L")
+        out.append(
+            {
+                "label": f"Bit {bit}",
+                "url": _image_to_data_url(plane_img),
+            }
+        )
+    return out
+
+
+def build_bit_plane_payload(cover_image: Image.Image, stego_image: Image.Image) -> dict[str, Any]:
+    """构建位平面交互组件的数据载荷（载体图+隐写图）。"""
+    return {
+        "cover": {
+            "title": "载体图位平面分解",
+            "original_url": _image_to_data_url(cover_image.convert("RGB")),
+            "planes": _bit_plane_images(cover_image),
+        },
+        "stego": {
+            "title": "隐写图位平面分解",
+            "original_url": _image_to_data_url(stego_image.convert("RGB")),
+            "planes": _bit_plane_images(stego_image),
+        },
+    }
 
 
 def estimate_capacity(image: Image.Image) -> Tuple[int, int]:

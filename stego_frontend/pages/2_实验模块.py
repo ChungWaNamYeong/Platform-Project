@@ -4,15 +4,18 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 import time
 from typing import Any
 
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 
 from stego_frontend.modules import auth
 from stego_frontend.modules import branding
 from stego_logic.lsb_steg import (
+    build_bit_plane_payload,
     build_histogram_figure,
     embed_message,
     estimate_capacity,
@@ -231,6 +234,205 @@ def _render_admin_panel(user: dict[str, Any]) -> None:
                 st.caption("—")
 
 
+def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image.Image) -> None:
+    """渲染位平面分解交互组件（悬停叠放 + 点击平铺）。"""
+    payload = build_bit_plane_payload(cover_image, stego_image)
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    html = f"""
+    <style>
+      .bp-wrap {{
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin-top: 6px;
+      }}
+      .bp-grid {{
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 20px;
+      }}
+      .bp-panel {{
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        padding: 12px;
+        background: #ffffff;
+        transition: box-shadow 180ms ease;
+      }}
+      .bp-panel:hover {{
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+      }}
+      .bp-title {{
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0 0 8px 0;
+      }}
+      .bp-original {{
+        width: 100%;
+        max-height: 220px;
+        object-fit: contain;
+        border-radius: 10px;
+        border: 1px solid #e5e7eb;
+        background: #f8fafc;
+        display: block;
+      }}
+      .bp-hint {{
+        margin-top: 6px;
+        font-size: 12px;
+        color: #4b5563;
+      }}
+      .bp-stack {{
+        position: relative;
+        height: 190px;
+        margin-top: 10px;
+        border-radius: 10px;
+        border: 1px dashed #cbd5e1;
+        background: #f8fafc;
+        overflow: hidden;
+        cursor: pointer;
+      }}
+      .bp-card {{
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 118px;
+        height: 118px;
+        transform: translate(-50%, -50%) scale(0.78);
+        transform-origin: center;
+        transition: transform 280ms ease, opacity 280ms ease;
+        border-radius: 8px;
+        border: 1px solid #d1d5db;
+        background: #ffffff;
+        padding: 4px;
+        opacity: 0.92;
+      }}
+      .bp-card img {{
+        width: 100%;
+        height: 92px;
+        object-fit: cover;
+        border-radius: 6px;
+      }}
+      .bp-card span {{
+        display: block;
+        text-align: center;
+        font-size: 10px;
+        margin-top: 3px;
+        color: #334155;
+      }}
+      .bp-panel:hover .bp-stack:not(.expanded) .bp-card {{
+        transform:
+          translate(calc(-50% + (var(--idx) - 3.5) * 11px),
+                    calc(-50% + (var(--idx) - 3.5) * -7px))
+          scale(0.82);
+      }}
+      .bp-panel.expanded .bp-stack {{
+        height: 0;
+        margin: 0;
+        border: 0;
+        overflow: hidden;
+      }}
+      .bp-planes-grid {{
+        margin-top: 10px;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+        max-height: 0;
+        opacity: 0;
+        transform: translateY(10px);
+        overflow: hidden;
+        transition: max-height 320ms ease, opacity 320ms ease, transform 320ms ease;
+      }}
+      .bp-panel.expanded .bp-planes-grid {{
+        max-height: 1000px;
+        opacity: 1;
+        transform: translateY(0);
+      }}
+      .bp-plane-item {{
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 4px;
+        background: #fff;
+      }}
+      .bp-plane-item img {{
+        width: 100%;
+        height: 78px;
+        object-fit: cover;
+        border-radius: 6px;
+      }}
+      .bp-plane-item div {{
+        text-align: center;
+        font-size: 11px;
+        margin-top: 2px;
+      }}
+      .bp-toggle {{
+        margin-top: 10px;
+        width: 100%;
+        border: 1px solid #cbd5e1;
+        background: #fff;
+        border-radius: 8px;
+        padding: 6px 8px;
+        cursor: pointer;
+        font-size: 12px;
+      }}
+      @media (max-width: 920px) {{
+        .bp-grid {{
+          grid-template-columns: 1fr;
+        }}
+        .bp-planes-grid {{
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }}
+      }}
+    </style>
+    <div class="bp-wrap">
+      <div id="bpRoot" class="bp-grid"></div>
+    </div>
+    <script>
+      const payload = {payload_json};
+      const root = document.getElementById("bpRoot");
+
+      function makePanel(data) {{
+        const panel = document.createElement("div");
+        panel.className = "bp-panel";
+        panel.innerHTML = `
+          <div class="bp-title">${{data.title}}</div>
+          <img class="bp-original" src="${{data.original_url}}" alt="${{data.title}}" />
+          <div class="bp-hint">鼠标悬停可预览位平面叠放，点击下方按钮可展开平铺。</div>
+          <div class="bp-stack" title="Hover 预览叠放，Click 展开平铺"></div>
+          <button class="bp-toggle" type="button">点击展开 8 张位平面</button>
+          <div class="bp-planes-grid"></div>
+        `;
+
+        const stack = panel.querySelector(".bp-stack");
+        const grid = panel.querySelector(".bp-planes-grid");
+        const toggle = panel.querySelector(".bp-toggle");
+        data.planes.forEach((item, idx) => {{
+          const card = document.createElement("div");
+          card.className = "bp-card";
+          card.style.setProperty("--idx", String(idx));
+          card.innerHTML = `<img src="${{item.url}}" alt="${{item.label}}" /><span>${{item.label}}</span>`;
+          stack.appendChild(card);
+
+          const plane = document.createElement("div");
+          plane.className = "bp-plane-item";
+          plane.innerHTML = `<img src="${{item.url}}" alt="${{item.label}}" /><div>${{item.label}}</div>`;
+          grid.appendChild(plane);
+        }});
+
+        const toggleExpand = () => {{
+          panel.classList.toggle("expanded");
+          const expanded = panel.classList.contains("expanded");
+          stack.classList.toggle("expanded", expanded);
+          toggle.textContent = expanded ? "点击收起为叠放预览" : "点击展开 8 张位平面";
+        }};
+        toggle.addEventListener("click", toggleExpand);
+        stack.addEventListener("click", toggleExpand);
+        return panel;
+      }}
+
+      root.appendChild(makePanel(payload.cover));
+      root.appendChild(makePanel(payload.stego));
+    </script>
+    """
+    components.html(html, height=980, scrolling=False)
+
+
 def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_topic: str) -> None:
     """渲染空域 LSB 隐写实验交互区。"""
     if selected_topic != "空域 LSB 隐写":
@@ -309,6 +511,9 @@ def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_to
             },
         )
         st.caption("可使用鼠标滚轮/框选自由缩放图表，双击图表可恢复全尺度。")
+
+    st.markdown("**位平面分解（载体图 vs 隐写图）**")
+    _render_bit_plane_decomposition(cover_saved, stego_saved)
 
     source_text = st.session_state.get("lsb_source_text", "")
     try:
