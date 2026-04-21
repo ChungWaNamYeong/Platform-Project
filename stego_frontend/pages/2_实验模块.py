@@ -3,13 +3,22 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 import time
 from typing import Any
 
+import matplotlib.pyplot as plt
 import streamlit as st
+from PIL import Image
 
 from stego_frontend.modules import auth
 from stego_frontend.modules import branding
+from stego_logic.lsb_steg import (
+    build_histogram_figure,
+    embed_message,
+    estimate_capacity,
+    extract_message,
+)
 
 EXPERIMENT_TOPICS = (
     "空域 LSB 隐写",
@@ -223,6 +232,81 @@ def _render_admin_panel(user: dict[str, Any]) -> None:
                 st.caption("—")
 
 
+def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_topic: str) -> None:
+    """渲染空域 LSB 隐写实验交互区。"""
+    if selected_topic != "空域 LSB 隐写":
+        return
+
+    st.divider()
+    st.subheader("空域 LSB 隐写实验")
+    if not running_run:
+        st.info("请先点击“启动实验环境”，再进行 LSB 隐写实验。")
+        return
+
+    uploaded_file = st.file_uploader(
+        "上传载体图（PNG/JPG）",
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=False,
+    )
+    message_text = st.text_area("输入要嵌入的文本", height=120, placeholder="请输入需要隐藏的文本内容...")
+
+    cover_image: Image.Image | None = None
+    if uploaded_file is not None:
+        cover_image = Image.open(uploaded_file).convert("RGB")
+        _, cap_bytes = estimate_capacity(cover_image)
+        st.caption(f"当前图像可用隐写容量约：{cap_bytes} 字节（UTF-8）")
+
+    if st.button("执行 LSB 隐写", type="primary", width="stretch"):
+        if cover_image is None:
+            st.error("请先上传载体图。")
+        elif not message_text.strip():
+            st.error("请先输入要嵌入的文本。")
+        else:
+            try:
+                stego_image = embed_message(cover_image, message_text)
+            except Exception as exc:
+                st.error(f"隐写失败：{exc}")
+            else:
+                st.session_state.lsb_cover_image = cover_image
+                st.session_state.lsb_stego_image = stego_image
+                st.success("隐写完成，已生成隐写图。")
+
+    cover_saved = st.session_state.get("lsb_cover_image")
+    stego_saved = st.session_state.get("lsb_stego_image")
+    if not cover_saved or not stego_saved:
+        return
+
+    col_cover, col_stego = st.columns(2)
+    with col_cover:
+        st.markdown("**载体图**")
+        st.image(cover_saved, width="stretch")
+    with col_stego:
+        st.markdown("**隐写图**")
+        st.image(stego_saved, width="stretch")
+        buf = BytesIO()
+        stego_saved.save(buf, format="PNG")
+        st.download_button(
+            "下载隐写图（PNG）",
+            data=buf.getvalue(),
+            file_name="lsb_stego.png",
+            mime="image/png",
+            width="stretch",
+        )
+
+    st.markdown("**直方图对比（载体图 vs 隐写图）**")
+    fig = build_histogram_figure(cover_saved, stego_saved)
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+
+    if st.button("提取文本", width="stretch"):
+        try:
+            extracted = extract_message(stego_saved)
+        except Exception as exc:
+            st.error(f"提取失败：{exc}")
+        else:
+            st.text_area("提取结果", value=extracted, height=120)
+
+
 def main() -> None:
     st.set_page_config(
         page_title="实验模块",
@@ -264,6 +348,7 @@ def main() -> None:
             _stop_sandbox()
             st.rerun()
 
+    _render_lsb_experiment_panel(running_run, selected_topic)
     _render_admin_panel(current_user)
 
 

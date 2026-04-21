@@ -5,3 +5,5 @@ docker
 requests
 opencv-python
 stegano
+Pillow
+matplotlib
