@@ -269,6 +269,7 @@ def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_to
             else:
                 st.session_state.lsb_cover_image = cover_image
                 st.session_state.lsb_stego_image = stego_image
+                st.session_state.lsb_source_text = message_text
                 st.success("隐写完成，已生成隐写图。")
 
     cover_saved = st.session_state.get("lsb_cover_image")
@@ -294,17 +295,39 @@ def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_to
         )
 
     st.markdown("**直方图对比（载体图 vs 隐写图）**")
-    fig = build_histogram_figure(cover_saved, stego_saved)
-    st.pyplot(fig, use_container_width=True)
-    plt.close(fig)
+    try:
+        fig = build_histogram_figure(cover_saved, stego_saved)
+    except Exception as exc:
+        st.error(f"直方图渲染失败：{exc}")
+    else:
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
 
-    if st.button("提取文本", width="stretch"):
-        try:
-            extracted = extract_message(stego_saved)
-        except Exception as exc:
-            st.error(f"提取失败：{exc}")
+    source_text = st.session_state.get("lsb_source_text", "")
+    try:
+        extracted = extract_message(stego_saved)
+    except Exception as exc:
+        extracted = ""
+        st.error(f"提取失败：{exc}")
+
+    st.markdown("**文本提取校验**")
+    col_src, col_ext = st.columns(2)
+    with col_src:
+        st.text_area("原始文本", value=source_text, height=120, disabled=True)
+    with col_ext:
+        st.text_area("提取文本", value=extracted, height=120, disabled=True)
+
+    if source_text and extracted:
+        if source_text == extracted:
+            st.success("提取结果与原始文本一致。")
         else:
-            st.text_area("提取结果", value=extracted, height=120)
+            mismatch_idx = next(
+                (i for i, (a, b) in enumerate(zip(source_text, extracted)) if a != b),
+                min(len(source_text), len(extracted)),
+            )
+            st.warning(
+                f"提取结果与原始文本不一致，首个差异位置：{mismatch_idx}。"
+            )
 
 
 def main() -> None:

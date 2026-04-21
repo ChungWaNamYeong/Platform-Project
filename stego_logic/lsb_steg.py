@@ -66,20 +66,50 @@ def extract_message(image: Image.Image) -> str:
 
 
 def build_histogram_figure(cover_image: Image.Image, stego_image: Image.Image):
-    """生成载体图与隐写图直方图对比图。"""
-    cover_arr = _to_rgb_array(cover_image).reshape(-1)
-    stego_arr = _to_rgb_array(stego_image).reshape(-1)
+    """Generate grayscale histogram comparison with visible delta."""
+    try:
+        import cv2
+    except Exception as exc:  # pragma: no cover - runtime environment dependency
+        raise RuntimeError(
+            "OpenCV is unavailable in current runtime. "
+            "Please install opencv-python-headless or required system libraries."
+        ) from exc
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4), dpi=120)
-    axes[0].hist(cover_arr, bins=256, color="#3b82f6", alpha=0.85)
-    axes[0].set_title("载体图直方图")
-    axes[0].set_xlabel("像素值")
-    axes[0].set_ylabel("频数")
+    cover_rgb = _to_rgb_array(cover_image)
+    stego_rgb = _to_rgb_array(stego_image)
 
-    axes[1].hist(stego_arr, bins=256, color="#10b981", alpha=0.85)
-    axes[1].set_title("隐写图直方图")
-    axes[1].set_xlabel("像素值")
-    axes[1].set_ylabel("频数")
+    cover_gray = cv2.cvtColor(cover_rgb, cv2.COLOR_RGB2GRAY)
+    stego_gray = cv2.cvtColor(stego_rgb, cv2.COLOR_RGB2GRAY)
+
+    cover_hist = cv2.calcHist([cover_gray], [0], None, [256], [0, 256]).flatten()
+    stego_hist = cv2.calcHist([stego_gray], [0], None, [256], [0, 256]).flatten()
+    diff_hist = np.abs(stego_hist - cover_hist)
+    bins = np.arange(256)
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 7), dpi=120, sharex=True)
+    axes[0].plot(bins, cover_hist, color="#2563eb", linewidth=1.4, label="Cover (Grayscale)")
+    axes[0].plot(bins, stego_hist, color="#059669", linewidth=1.1, label="Stego (Grayscale)")
+    axes[0].set_title("Histogram Comparison (cv2.calcHist)")
+    axes[0].set_ylabel("Pixel Count")
+    axes[0].legend(loc="upper right")
+    axes[0].grid(alpha=0.15)
+
+    axes[1].bar(bins, diff_hist, color="#ef4444", width=1.0, alpha=0.85)
+    axes[1].set_title("Absolute Histogram Difference |Stego - Cover|")
+    axes[1].set_xlabel("Gray Level (0-255)")
+    axes[1].set_ylabel("Delta Count")
+    axes[1].grid(alpha=0.15)
+
+    peak_bin = int(np.argmax(diff_hist))
+    peak_val = float(diff_hist[peak_bin])
+    axes[1].annotate(
+        f"Max delta at bin {peak_bin}: {peak_val:.0f}",
+        xy=(peak_bin, peak_val),
+        xytext=(min(peak_bin + 18, 240), peak_val * 1.1 + 1),
+        arrowprops={"arrowstyle": "->", "color": "#111827"},
+        fontsize=9,
+        color="#111827",
+    )
 
     fig.tight_layout()
     return fig

@@ -10,7 +10,10 @@ services:
       - ./:/app
       - /var/run/docker.sock:/var/run/docker.sock
     command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      sh -c "apt-get update &&
+             apt-get install -y --no-install-recommends libxcb1 &&
+             rm -rf /var/lib/apt/lists/* &&
+             pip install --no-cache-dir -r requirements.txt &&
              python stego_backend/manage.py migrate &&
              python stego_backend/manage.py runserver 0.0.0.0:8000"
     ports:
@@ -31,7 +34,10 @@ services:
     volumes:
       - ./:/app
     command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      sh -c "apt-get update &&
+             apt-get install -y --no-install-recommends libxcb1 &&
+             rm -rf /var/lib/apt/lists/* &&
+             pip install --no-cache-dir -r requirements.txt &&
              streamlit run stego_frontend/app.py --server.address=0.0.0.0 --server.port=8501"
     ports:
       - "8501:8501"
