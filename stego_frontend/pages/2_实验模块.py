@@ -7,7 +7,6 @@ from io import BytesIO
 import time
 from typing import Any
 
-import matplotlib.pyplot as plt
 import streamlit as st
 from PIL import Image
 
@@ -300,8 +299,16 @@ def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_to
     except Exception as exc:
         st.error(f"直方图渲染失败：{exc}")
     else:
-        st.pyplot(fig, use_container_width=True)
-        plt.close(fig)
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={
+                "scrollZoom": True,
+                "displaylogo": False,
+                "modeBarButtonsToAdd": ["zoom2d", "pan2d", "resetScale2d"],
+            },
+        )
+        st.caption("可使用鼠标滚轮/框选自由缩放图表，双击图表可恢复全尺度。")
 
     source_text = st.session_state.get("lsb_source_text", "")
     try:

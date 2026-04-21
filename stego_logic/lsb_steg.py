@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Tuple
 
-import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
 
 LENGTH_HEADER_BITS = 32
 
@@ -66,7 +67,7 @@ def extract_message(image: Image.Image) -> str:
 
 
 def build_histogram_figure(cover_image: Image.Image, stego_image: Image.Image):
-    """Generate grayscale histogram comparison with visible delta."""
+    """Generate interactive grayscale histogram comparison figure."""
     try:
         import cv2
     except Exception as exc:  # pragma: no cover - runtime environment dependency
@@ -85,33 +86,82 @@ def build_histogram_figure(cover_image: Image.Image, stego_image: Image.Image):
     stego_hist = cv2.calcHist([stego_gray], [0], None, [256], [0, 256]).flatten()
     diff_hist = np.abs(stego_hist - cover_hist)
     bins = np.arange(256)
+    cover_hist_norm = cover_hist / max(float(cover_hist.sum()), 1.0)
+    stego_hist_norm = stego_hist / max(float(stego_hist.sum()), 1.0)
 
-    fig, axes = plt.subplots(2, 1, figsize=(12, 7), dpi=120, sharex=True)
-    axes[0].plot(bins, cover_hist, color="#2563eb", linewidth=1.4, label="Cover (Grayscale)")
-    axes[0].plot(bins, stego_hist, color="#059669", linewidth=1.1, label="Stego (Grayscale)")
-    axes[0].set_title("Histogram Comparison (cv2.calcHist)")
-    axes[0].set_ylabel("Pixel Count")
-    axes[0].legend(loc="upper right")
-    axes[0].grid(alpha=0.15)
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.2,
+        row_heights=[0.56, 0.44],
+        subplot_titles=(
+            "Normalized Histogram Comparison (cv2.calcHist)",
+            "Absolute Histogram Difference |Stego - Cover|",
+        ),
+    )
 
-    axes[1].bar(bins, diff_hist, color="#ef4444", width=1.0, alpha=0.85)
-    axes[1].set_title("Absolute Histogram Difference |Stego - Cover|")
-    axes[1].set_xlabel("Gray Level (0-255)")
-    axes[1].set_ylabel("Delta Count")
-    axes[1].grid(alpha=0.15)
+    fig.add_trace(
+        go.Scatter(
+            x=bins,
+            y=cover_hist_norm,
+            mode="lines",
+            line={"color": "#2563eb", "width": 2},
+            name="Cover (Normalized)",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=bins,
+            y=stego_hist_norm,
+            mode="lines",
+            line={"color": "#059669", "width": 2},
+            name="Stego (Normalized)",
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Bar(
+            x=bins,
+            y=diff_hist,
+            marker_color="#ef4444",
+            opacity=0.82,
+            name="Absolute Difference",
+        ),
+        row=2,
+        col=1,
+    )
 
     peak_bin = int(np.argmax(diff_hist))
     peak_val = float(diff_hist[peak_bin])
-    axes[1].annotate(
-        f"Max delta at bin {peak_bin}: {peak_val:.0f}",
-        xy=(peak_bin, peak_val),
-        xytext=(min(peak_bin + 18, 240), peak_val * 1.1 + 1),
-        arrowprops={"arrowstyle": "->", "color": "#111827"},
-        fontsize=9,
-        color="#111827",
+
+    fig.update_xaxes(title_text="Gray Level (0-255)", row=2, col=1)
+    fig.update_yaxes(title_text="Normalized Count", row=1, col=1)
+    fig.update_yaxes(title_text="Delta Count", row=2, col=1)
+    fig.update_layout(
+        height=760,
+        hovermode="x unified",
+        bargap=0,
+        margin={"l": 70, "r": 230, "t": 80, "b": 60},
+        legend={"orientation": "h", "x": 0, "y": 1.12},
+    )
+    fig.add_annotation(
+        x=1.02,
+        y=0.92,
+        xref="paper",
+        yref="paper",
+        showarrow=False,
+        align="left",
+        bordercolor="#d1d5db",
+        borderwidth=1,
+        borderpad=6,
+        bgcolor="#f9fafb",
+        text=f"<b>Max delta at</b><br>bin={peak_bin}<br>delta={peak_val:.0f}",
     )
 
-    fig.tight_layout()
     return fig
 
 
