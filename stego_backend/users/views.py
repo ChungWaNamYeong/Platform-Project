@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import csv
+
 from django.contrib.auth import authenticate, get_user_model
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from docker.errors import DockerException
@@ -12,12 +15,13 @@ from rest_framework.views import APIView
 
 from sandbox_manager import StegoSandbox
 
-from .models import ChatSession, SandboxRun
+from .models import ChatSession, ExperimentRecord, SandboxRun
 from .permissions import IsSuperUser
 from .serializers import (
     AdminUserSerializer,
     ChatMessageSerializer,
     ChatSessionSerializer,
+    ExperimentRecordSerializer,
     RegisterSerializer,
     SandboxRunSerializer,
     StudentSerializer,
@@ -310,3 +314,112 @@ class SandboxAdminRunsView(generics.ListAPIView):
     permission_classes = [IsAuthenticated, IsSuperUser]
     serializer_class = SandboxRunSerializer
     queryset = SandboxRun.objects.select_related("user").all().order_by("-created_at")
+
+
+class ExperimentRecordListCreateView(generics.ListCreateAPIView):
+    """实验记录列表与创建接口。"""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = ExperimentRecordSerializer
+
+    def get_queryset(self):
+        queryset = ExperimentRecord.objects.select_related("user").order_by("-created_at")
+        if self.request.user.is_superuser:
+            return queryset
+        return queryset.filter(user=self.request.user)
+
+    def create(self, request, *args, **kwargs):
+        data = request.data.copy()
+        experiment_name = str(data.get("experiment_name") or "").strip()
+        if not experiment_name:
+            data["experiment_name"] = "空域 LSB 隐写"
+            experiment_name = "空域 LSB 隐写"
+
+        if not data.get("started_at"):
+            latest_run = (
+                SandboxRun.objects.filter(user=request.user, experiment_topic=experiment_name)
+                .order_by("-started_at", "-created_at")
+                .first()
+            )
+            if latest_run and latest_run.started_at:
+                data["started_at"] = latest_run.started_at.isoformat()
+            else:
+                data["started_at"] = timezone.now().isoformat()
+        if not data.get("completed_at"):
+            data["completed_at"] = timezone.now().isoformat()
+
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(user=request.user)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+
+class ExperimentRecordDetailView(generics.RetrieveDestroyAPIView):
+    """单条实验记录详情/删除。"""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = ExperimentRecordSerializer
+    queryset = ExperimentRecord.objects.select_related("user").all()
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.request.user.is_superuser:
+            return queryset
+        return queryset.filter(user=self.request.user)
+
+
+class ExperimentRecordExportView(APIView):
+    """导出实验记录，支持 JSON 与 CSV。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        export_format = str(request.query_params.get("format", "json")).strip().lower()
+        queryset = ExperimentRecord.objects.select_related("user").order_by("-created_at")
+        if not request.user.is_superuser:
+            queryset = queryset.filter(user=request.user)
+
+        if export_format == "csv":
+            return self._export_csv(queryset)
+
+        payload = ExperimentRecordSerializer(queryset, many=True).data
+        return Response(payload)
+
+    @staticmethod
+    def _export_csv(queryset):
+        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = 'attachment; filename="experiment_records.csv"'
+        writer = csv.writer(response)
+        writer.writerow(
+            [
+                "id",
+                "username",
+                "experiment_name",
+                "started_at",
+                "completed_at",
+                "psnr",
+                "source_text",
+                "extracted_text",
+                "cover_image_b64_length",
+                "stego_image_b64_length",
+                "created_at",
+            ]
+        )
+        for item in queryset:
+            writer.writerow(
+                [
+                    item.id,
+                    item.user.username,
+                    item.experiment_name,
+                    item.started_at.isoformat() if item.started_at else "",
+                    item.completed_at.isoformat() if item.completed_at else "",
+                    item.psnr if item.psnr is not None else "",
+                    item.source_text,
+                    item.extracted_text,
+                    len(item.cover_image_b64 or ""),
+                    len(item.stego_image_b64 or ""),
+                    item.created_at.isoformat() if item.created_at else "",
+                ]
+            )
+        return response

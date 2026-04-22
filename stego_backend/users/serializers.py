@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
-from .models import ChatMessage, ChatSession, SandboxRun
+from .models import ChatMessage, ChatSession, ExperimentRecord, SandboxRun
 
 Student = get_user_model()
 
@@ -148,6 +148,37 @@ class SandboxRunSerializer(serializers.ModelSerializer):
             "web_port",
             "started_at",
             "stopped_at",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class ExperimentRecordSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source="user.username", read_only=True)
+
+    class Meta:
+        model = ExperimentRecord
+        fields = [
+            "id",
+            "user",
+            "username",
+            "experiment_name",
+            "started_at",
+            "completed_at",
+            "cover_image_b64",
+            "stego_image_b64",
+            "psnr",
+            "histogram_data",
+            "bit_planes_data",
+            "source_text",
+            "extracted_text",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "user",
+            "username",
             "created_at",
             "updated_at",
         ]

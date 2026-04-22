@@ -113,3 +113,34 @@ class SandboxRun(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user.username} - {self.experiment_topic} ({self.status})"
+
+
+class ExperimentRecord(models.Model):
+    """记录实验展示结果，供学生与管理员查看学情。"""
+
+    user = models.ForeignKey(
+        Student,
+        on_delete=models.CASCADE,
+        related_name="experiment_records",
+        verbose_name="所属用户",
+    )
+    experiment_name = models.CharField("实验名称", max_length=120)
+    started_at = models.DateTimeField("启动时间", blank=True, null=True)
+    completed_at = models.DateTimeField("完成时间", blank=True, null=True)
+    cover_image_b64 = models.TextField("载体图(Base64)", blank=True, default="")
+    stego_image_b64 = models.TextField("隐写图(Base64)", blank=True, default="")
+    psnr = models.FloatField("PSNR", blank=True, null=True)
+    histogram_data = models.JSONField("直方图数据", default=dict, blank=True)
+    bit_planes_data = models.JSONField("位平面数据", default=dict, blank=True)
+    source_text = models.TextField("原始文本", blank=True, default="")
+    extracted_text = models.TextField("提取文本", blank=True, default="")
+    created_at = models.DateTimeField("创建时间", auto_now_add=True)
+    updated_at = models.DateTimeField("更新时间", auto_now=True)
+
+    class Meta:
+        verbose_name = "实验记录"
+        verbose_name_plural = "实验记录"
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.user.username} - {self.experiment_name} ({self.created_at:%Y-%m-%d %H:%M:%S})"

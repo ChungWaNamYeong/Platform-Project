@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
-from io import BytesIO
+import base64
+import csv
+import hashlib
+from io import BytesIO, StringIO
 import json
 import time
 from typing import Any
@@ -171,6 +174,72 @@ def _format_dt(value: Any) -> str:
     return text
 
 
+def _image_to_b64(image: Image.Image) -> str:
+    """将 PIL 图片编码为 PNG Base64 字符串。"""
+    buf = BytesIO()
+    image.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+def _json_safe(data: Any) -> Any:
+    """将对象转换成可 JSON 序列化结构。"""
+    if hasattr(data, "to_json"):
+        try:
+            return json.loads(data.to_json())
+        except Exception:
+            pass
+    return json.loads(json.dumps(data, ensure_ascii=False, default=str))
+
+
+def _data_url_to_bytes(data_url: str) -> bytes | None:
+    """解析 data URL 为二进制内容。"""
+    if not data_url or "," not in data_url:
+        return None
+    try:
+        _, b64_data = data_url.split(",", 1)
+        return base64.b64decode(b64_data)
+    except Exception:
+        return None
+
+
+def _records_to_csv_text(records: list[dict[str, Any]]) -> str:
+    """将记录列表导出为 CSV 文本。"""
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "id",
+            "username",
+            "experiment_name",
+            "started_at",
+            "completed_at",
+            "psnr",
+            "source_text",
+            "extracted_text",
+            "cover_image_b64_length",
+            "stego_image_b64_length",
+            "created_at",
+        ]
+    )
+    for item in records:
+        writer.writerow(
+            [
+                item.get("id", ""),
+                item.get("username", ""),
+                item.get("experiment_name", ""),
+                item.get("started_at", ""),
+                item.get("completed_at", ""),
+                item.get("psnr", ""),
+                item.get("source_text", ""),
+                item.get("extracted_text", ""),
+                len(str(item.get("cover_image_b64") or "")),
+                len(str(item.get("stego_image_b64") or "")),
+                item.get("created_at", ""),
+            ]
+        )
+    return output.getvalue()
+
+
 def _render_admin_panel(user: dict[str, Any]) -> None:
     """超级管理员查看全局沙箱运行记录。"""
     if not user.get("is_superuser"):
@@ -235,7 +304,7 @@ def _render_admin_panel(user: dict[str, Any]) -> None:
                 st.caption("—")
 
 
-def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image.Image) -> None:
+def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image.Image) -> dict[str, Any]:
     """渲染位平面分解交互组件（悬停叠放 + 点击平铺）。"""
     payload = build_bit_plane_payload(cover_image, stego_image)
     payload_json = json.dumps(payload, ensure_ascii=False)
@@ -243,7 +312,7 @@ def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image
     <style>
       .bp-wrap {{
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        margin-top: 6px;
+        margin-top: 4px;
       }}
       .bp-grid {{
         display: grid;
@@ -253,7 +322,7 @@ def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image
       .bp-panel {{
         border: 1px solid #e5e7eb;
         border-radius: 14px;
-        padding: 12px;
+        padding: 10px;
         background: #ffffff;
         transition: box-shadow 180ms ease;
       }}
@@ -263,7 +332,7 @@ def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image
       .bp-title {{
         font-size: 14px;
         font-weight: 600;
-        margin: 0 0 8px 0;
+        margin: 0 0 6px 0;
       }}
       .bp-original {{
         width: 100%;
@@ -281,8 +350,8 @@ def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image
       }}
       .bp-stack {{
         position: relative;
-        height: 190px;
-        margin-top: 10px;
+        height: 176px;
+        margin-top: 8px;
         border-radius: 10px;
         border: 1px dashed #cbd5e1;
         background: #f8fafc;
@@ -330,7 +399,7 @@ def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image
         overflow: hidden;
       }}
       .bp-planes-grid {{
-        margin-top: 10px;
+        margin-top: 8px;
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 8px;
@@ -350,10 +419,11 @@ def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image
         border-radius: 8px;
         padding: 4px;
         background: #fff;
+        cursor: zoom-in;
       }}
       .bp-plane-item img {{
         width: 100%;
-        height: 78px;
+        height: 72px;
         object-fit: cover;
         border-radius: 6px;
       }}
@@ -363,7 +433,7 @@ def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image
         margin-top: 2px;
       }}
       .bp-toggle {{
-        margin-top: 10px;
+        margin-top: 8px;
         width: 100%;
         border: 1px solid #cbd5e1;
         background: #fff;
@@ -371,6 +441,58 @@ def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image
         padding: 6px 8px;
         cursor: pointer;
         font-size: 12px;
+      }}
+      .bp-modal {{
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: rgba(15, 23, 42, 0.72);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }}
+      .bp-modal.open {{
+        display: flex;
+      }}
+      .bp-modal-content {{
+        max-width: min(92vw, 920px);
+        width: fit-content;
+        background: #ffffff;
+        border-radius: 12px;
+        border: 1px solid #e5e7eb;
+        box-shadow: 0 12px 26px rgba(0, 0, 0, 0.28);
+        padding: 10px;
+      }}
+      .bp-modal-toolbar {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+        gap: 8px;
+      }}
+      .bp-modal-title {{
+        font-size: 14px;
+        color: #0f172a;
+        font-weight: 600;
+      }}
+      .bp-modal-close {{
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        background: #ffffff;
+        color: #334155;
+        padding: 4px 10px;
+        cursor: pointer;
+      }}
+      .bp-modal img {{
+        display: block;
+        max-width: min(92vw, 900px);
+        max-height: 74vh;
+        width: auto;
+        height: auto;
+        border-radius: 8px;
+        border: 1px solid #e5e7eb;
+        background: #f8fafc;
       }}
       @media (max-width: 920px) {{
         .bp-grid {{
@@ -383,10 +505,34 @@ def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image
     </style>
     <div class="bp-wrap">
       <div id="bpRoot" class="bp-grid"></div>
+      <div id="bpModal" class="bp-modal" role="dialog" aria-modal="true">
+        <div class="bp-modal-content">
+          <div class="bp-modal-toolbar">
+            <div id="bpModalTitle" class="bp-modal-title">位平面大图</div>
+            <button id="bpModalClose" type="button" class="bp-modal-close">关闭</button>
+          </div>
+          <img id="bpModalImage" src="" alt="位平面大图" />
+        </div>
+      </div>
     </div>
     <script>
       const payload = {payload_json};
       const root = document.getElementById("bpRoot");
+      const modal = document.getElementById("bpModal");
+      const modalImage = document.getElementById("bpModalImage");
+      const modalTitle = document.getElementById("bpModalTitle");
+      const modalClose = document.getElementById("bpModalClose");
+
+      function openModal(src, title) {{
+        modalImage.src = src;
+        modalImage.alt = title;
+        modalTitle.textContent = title;
+        modal.classList.add("open");
+      }}
+
+      function closeModal() {{
+        modal.classList.remove("open");
+      }}
 
       function makePanel(data) {{
         const panel = document.createElement("div");
@@ -413,6 +559,10 @@ def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image
           const plane = document.createElement("div");
           plane.className = "bp-plane-item";
           plane.innerHTML = `<img src="${{item.url}}" alt="${{item.label}}" /><div>${{item.label}}</div>`;
+          plane.addEventListener("click", (event) => {{
+            event.stopPropagation();
+            openModal(item.url, `${{data.title}} - ${{item.label}}`);
+          }});
           grid.appendChild(plane);
         }});
 
@@ -429,18 +579,35 @@ def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image
 
       root.appendChild(makePanel(payload.cover));
       root.appendChild(makePanel(payload.stego));
+      modalClose.addEventListener("click", closeModal);
+      modal.addEventListener("click", (event) => {{
+        if (event.target === modal) {{
+          closeModal();
+        }}
+      }});
+      window.addEventListener("keydown", (event) => {{
+        if (event.key === "Escape") {{
+          closeModal();
+        }}
+      }});
     </script>
     """
-    components.html(html, height=980, scrolling=False)
+    components.html(html, height=860, scrolling=False)
+    return payload
 
 
-def _render_psnr_banner(cover_image: Image.Image, stego_image: Image.Image) -> None:
+def _render_psnr_banner(
+    cover_image: Image.Image,
+    stego_image: Image.Image,
+    psnr_db: float | None = None,
+) -> None:
     """在载体图/隐写图下方、直方图上方展示 PSNR 及分级说明（悬停问号）。"""
-    try:
-        psnr_db = psnr_rgb_images(cover_image, stego_image)
-    except Exception as exc:
-        st.warning(f"PSNR 计算失败：{exc}")
-        return
+    if psnr_db is None:
+        try:
+            psnr_db = psnr_rgb_images(cover_image, stego_image)
+        except Exception as exc:
+            st.warning(f"PSNR 计算失败：{exc}")
+            return
 
     if psnr_db >= 40:
         bg, border, fg = "#dcfce7", "#22c55e", "#166534"
@@ -536,6 +703,181 @@ def _render_psnr_banner(cover_image: Image.Image, stego_image: Image.Image) -> N
     st.markdown(html, unsafe_allow_html=True)
 
 
+def _auto_save_experiment_record(
+    *,
+    experiment_name: str,
+    running_run: dict[str, Any] | None,
+    cover_image: Image.Image,
+    stego_image: Image.Image,
+    psnr_db: float | None,
+    histogram_data: dict[str, Any],
+    bit_plane_data: dict[str, Any],
+    source_text: str,
+    extracted_text: str,
+) -> None:
+    """实验结果就绪后自动写入后端记录。"""
+    cover_b64 = _image_to_b64(cover_image)
+    stego_b64 = _image_to_b64(stego_image)
+    signature_payload = {
+        "experiment_name": experiment_name,
+        "cover_digest": hashlib.sha256(cover_b64.encode("utf-8")).hexdigest(),
+        "stego_digest": hashlib.sha256(stego_b64.encode("utf-8")).hexdigest(),
+        "psnr": psnr_db,
+        "source_text": source_text,
+        "extracted_text": extracted_text,
+    }
+    signature = hashlib.sha256(
+        json.dumps(signature_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    if st.session_state.get("lsb_last_record_signature") == signature:
+        return
+
+    payload: dict[str, Any] = {
+        "experiment_name": experiment_name,
+        "cover_image_b64": cover_b64,
+        "stego_image_b64": stego_b64,
+        "psnr": psnr_db,
+        "histogram_data": histogram_data,
+        "bit_planes_data": bit_plane_data,
+        "source_text": source_text,
+        "extracted_text": extracted_text,
+    }
+    started_at = (running_run or {}).get("started_at")
+    if started_at:
+        payload["started_at"] = started_at
+    result = auth.api_request(
+        "POST",
+        "/labs/records",
+        with_auth=True,
+        json_data=payload,
+        timeout=45,
+    )
+    if result["ok"]:
+        st.session_state.lsb_last_record_signature = signature
+        st.session_state.lsb_last_record_error_signature = ""
+        st.caption("已自动记录本次实验结果。")
+        return
+
+    if st.session_state.get("lsb_last_record_error_signature") != signature:
+        st.session_state.lsb_last_record_error_signature = signature
+        st.warning(f"自动记录失败：{result['error']}")
+
+
+def _render_experiment_records_panel(current_user: dict[str, Any]) -> None:
+    """展示实验记录列表、删除与导出能力。"""
+    st.divider()
+    st.subheader("实验记录")
+    result = auth.api_request("GET", "/labs/records", with_auth=True, timeout=30)
+    if not result["ok"]:
+        st.error(f"读取实验记录失败：{result['error']}")
+        return
+    records = result["data"] or []
+    if not records:
+        st.caption("暂无实验记录。完成一次实验后将自动出现在这里。")
+        return
+
+    json_text = json.dumps(records, ensure_ascii=False, indent=2)
+    csv_text = _records_to_csv_text(records)
+    export_name_prefix = "all" if current_user.get("is_superuser") else "mine"
+    col_json, col_csv = st.columns(2)
+    with col_json:
+        st.download_button(
+            "导出当前列表（JSON）",
+            data=json_text.encode("utf-8"),
+            file_name=f"experiment_records_{export_name_prefix}.json",
+            mime="application/json",
+            width="stretch",
+        )
+    with col_csv:
+        st.download_button(
+            "导出当前列表（CSV）",
+            data=csv_text.encode("utf-8-sig"),
+            file_name=f"experiment_records_{export_name_prefix}.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+
+    for item in records:
+        rid = item.get("id")
+        owner = str(item.get("username") or "-")
+        title = str(item.get("experiment_name") or "-")
+        created_at = _format_dt(item.get("created_at"))
+        expander_title = f"#{rid} | {title} | {owner} | {created_at}"
+        with st.expander(expander_title, expanded=False):
+            st.write(f"启动时间：{_format_dt(item.get('started_at'))}")
+            st.write(f"完成时间：{_format_dt(item.get('completed_at'))}")
+            psnr_val = item.get("psnr")
+            st.write(f"PSNR：{psnr_val if psnr_val is not None else '-'}")
+
+            cover_b64 = str(item.get("cover_image_b64") or "")
+            stego_b64 = str(item.get("stego_image_b64") or "")
+            if cover_b64 and stego_b64:
+                img_cols = st.columns(2)
+                with img_cols[0]:
+                    st.markdown("**载体图（记录）**")
+                    st.image(base64.b64decode(cover_b64), width="stretch")
+                with img_cols[1]:
+                    st.markdown("**隐写图（记录）**")
+                    st.image(base64.b64decode(stego_b64), width="stretch")
+
+            bit_data = item.get("bit_planes_data") or {}
+            cover_planes = bit_data.get("cover") or []
+            stego_planes = bit_data.get("stego") or []
+            if cover_planes:
+                st.markdown("**位平面（载体图）**")
+                cols = st.columns(8)
+                for idx, plane in enumerate(cover_planes[:8]):
+                    with cols[idx]:
+                        img_bytes = _data_url_to_bytes(str(plane.get("url") or ""))
+                        if img_bytes:
+                            st.image(img_bytes, caption=str(plane.get("label") or ""), width="stretch")
+            if stego_planes:
+                st.markdown("**位平面（隐写图）**")
+                cols = st.columns(8)
+                for idx, plane in enumerate(stego_planes[:8]):
+                    with cols[idx]:
+                        img_bytes = _data_url_to_bytes(str(plane.get("url") or ""))
+                        if img_bytes:
+                            st.image(img_bytes, caption=str(plane.get("label") or ""), width="stretch")
+
+            hist = item.get("histogram_data") or {}
+            if hist:
+                st.markdown("**直方图（记录）**")
+                st.plotly_chart(hist, use_container_width=True)
+
+            st.markdown("**文本提取校验（记录）**")
+            txt_cols = st.columns(2)
+            with txt_cols[0]:
+                st.text_area(
+                    "原始文本（记录）",
+                    value=str(item.get("source_text") or ""),
+                    height=120,
+                    disabled=True,
+                    key=f"record_source_{rid}",
+                )
+            with txt_cols[1]:
+                st.text_area(
+                    "提取文本（记录）",
+                    value=str(item.get("extracted_text") or ""),
+                    height=120,
+                    disabled=True,
+                    key=f"record_extracted_{rid}",
+                )
+
+            if rid is not None and st.button("删除该记录", key=f"delete_record_{rid}", width="stretch"):
+                delete_result = auth.api_request(
+                    "DELETE",
+                    f"/labs/records/{rid}",
+                    with_auth=True,
+                    timeout=30,
+                )
+                if delete_result["ok"]:
+                    st.success("记录已删除。")
+                    st.rerun()
+                else:
+                    st.error(f"删除失败：{delete_result['error']}")
+
+
 def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_topic: str) -> None:
     """渲染空域 LSB 隐写实验交互区。"""
     if selected_topic != "空域 LSB 隐写":
@@ -598,14 +940,20 @@ def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_to
             width="stretch",
         )
 
-    _render_psnr_banner(cover_saved, stego_saved)
+    try:
+        psnr_db = psnr_rgb_images(cover_saved, stego_saved)
+    except Exception:
+        psnr_db = None
+    _render_psnr_banner(cover_saved, stego_saved, psnr_db=psnr_db)
 
     st.markdown("**直方图对比（载体图 vs 隐写图）**")
+    histogram_data: dict[str, Any] = {}
     try:
         fig = build_histogram_figure(cover_saved, stego_saved)
     except Exception as exc:
         st.error(f"直方图渲染失败：{exc}")
     else:
+        histogram_data = _json_safe(fig)
         st.plotly_chart(
             fig,
             use_container_width=True,
@@ -618,7 +966,7 @@ def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_to
         st.caption("可使用鼠标滚轮/框选自由缩放图表，双击图表可恢复全尺度。")
 
     st.markdown("**位平面分解（载体图 vs 隐写图）**")
-    _render_bit_plane_decomposition(cover_saved, stego_saved)
+    bit_plane_payload = _render_bit_plane_decomposition(cover_saved, stego_saved)
 
     source_text = st.session_state.get("lsb_source_text", "")
     try:
@@ -645,6 +993,21 @@ def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_to
             st.warning(
                 f"提取结果与原始文本不一致，首个差异位置：{mismatch_idx}。"
             )
+
+    _auto_save_experiment_record(
+        experiment_name=selected_topic,
+        running_run=running_run,
+        cover_image=cover_saved,
+        stego_image=stego_saved,
+        psnr_db=psnr_db,
+        histogram_data=histogram_data,
+        bit_plane_data={
+            "cover": (bit_plane_payload.get("cover") or {}).get("planes", []),
+            "stego": (bit_plane_payload.get("stego") or {}).get("planes", []),
+        },
+        source_text=source_text,
+        extracted_text=extracted,
+    )
 
 
 def main() -> None:
@@ -689,6 +1052,7 @@ def main() -> None:
             st.rerun()
 
     _render_lsb_experiment_panel(running_run, selected_topic)
+    _render_experiment_records_panel(current_user)
     _render_admin_panel(current_user)
 
 
