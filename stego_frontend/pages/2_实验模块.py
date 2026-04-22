@@ -20,6 +20,7 @@ from stego_logic.lsb_steg import (
     embed_message,
     estimate_capacity,
     extract_message,
+    psnr_rgb_images,
 )
 
 EXPERIMENT_TOPICS = (
@@ -433,6 +434,108 @@ def _render_bit_plane_decomposition(cover_image: Image.Image, stego_image: Image
     components.html(html, height=980, scrolling=False)
 
 
+def _render_psnr_banner(cover_image: Image.Image, stego_image: Image.Image) -> None:
+    """在载体图/隐写图下方、直方图上方展示 PSNR 及分级说明（悬停问号）。"""
+    try:
+        psnr_db = psnr_rgb_images(cover_image, stego_image)
+    except Exception as exc:
+        st.warning(f"PSNR 计算失败：{exc}")
+        return
+
+    if psnr_db >= 40:
+        bg, border, fg = "#dcfce7", "#22c55e", "#166534"
+    elif psnr_db >= 30:
+        bg, border, fg = "#dbeafe", "#3b82f6", "#1e40af"
+    elif psnr_db >= 20:
+        bg, border, fg = "#fef9c3", "#eab308", "#854d0e"
+    else:
+        bg, border, fg = "#fee2e2", "#ef4444", "#991b1b"
+
+    tip_lines = (
+        "PSNR 分级参考（峰值信噪比，单位 dB）：",
+        "· 高于 40：图像质量极好，与原始图像非常接近；",
+        "· 30～40：图像质量较好，失真可察觉但通常可接受；",
+        "· 20～30：图像质量较差；",
+        "· 低于 20：图像质量不可接受。",
+    )
+    tip_html = "<br/>".join(tip_lines)
+
+    html = f"""
+    <style>
+      .lsb-psnr-banner {{
+        position: relative;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px 10px;
+        padding: 12px 16px;
+        margin: 12px 0 16px 0;
+        border-radius: 12px;
+        border: 2px solid {border};
+        background: {bg};
+        color: {fg};
+        font-size: 16px;
+        font-weight: 600;
+        line-height: 1.4;
+      }}
+      .lsb-psnr-qwrap {{
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin-left: 4px;
+        vertical-align: middle;
+      }}
+      .lsb-psnr-q {{
+        display: inline-flex;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 2px solid currentColor;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: help;
+        line-height: 1;
+        user-select: none;
+      }}
+      .lsb-psnr-tip {{
+        display: none;
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        top: calc(100% + 10px);
+        z-index: 100;
+        min-width: 300px;
+        max-width: 420px;
+        padding: 14px 16px;
+        background: #ffffff;
+        color: #1f2937;
+        font-size: 13px;
+        font-weight: 400;
+        line-height: 1.6;
+        text-align: left;
+        border-radius: 10px;
+        border: 1px solid #e5e7eb;
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+        pointer-events: none;
+      }}
+      .lsb-psnr-qwrap:hover .lsb-psnr-tip {{
+        display: block;
+      }}
+    </style>
+    <div class="lsb-psnr-banner">
+      <span>PSNR（峰值信噪比）：{psnr_db:.2f} dB</span>
+      <span class="lsb-psnr-qwrap">
+        <span class="lsb-psnr-q">?</span>
+        <div class="lsb-psnr-tip">{tip_html}</div>
+      </span>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_topic: str) -> None:
     """渲染空域 LSB 隐写实验交互区。"""
     if selected_topic != "空域 LSB 隐写":
@@ -494,6 +597,8 @@ def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_to
             mime="image/png",
             width="stretch",
         )
+
+    _render_psnr_banner(cover_saved, stego_saved)
 
     st.markdown("**直方图对比（载体图 vs 隐写图）**")
     try:

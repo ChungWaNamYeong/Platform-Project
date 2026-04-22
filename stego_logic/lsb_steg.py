@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import math
 from io import BytesIO
 from typing import Any, Tuple
 
@@ -15,6 +16,21 @@ LENGTH_HEADER_BITS = 32
 def _to_rgb_array(image: Image.Image) -> np.ndarray:
     """统一转换为 RGB 三通道数组。"""
     return np.array(image.convert("RGB"), dtype=np.uint8)
+
+
+def psnr(img_1: np.ndarray, img_2: np.ndarray) -> float:
+    """计算两幅同尺寸图像的 PSNR（dB），与常见教材公式一致。"""
+    if img_1.shape != img_2.shape:
+        raise ValueError("两幅图像尺寸不一致，无法计算 PSNR。")
+    mse = float(np.mean((img_1 / 1.0 - img_2 / 1.0) ** 2))
+    if mse < 1.0e-10:
+        return 100.0
+    return float(10 * math.log10(255.0**2 / mse))
+
+
+def psnr_rgb_images(cover: Image.Image, stego: Image.Image) -> float:
+    """对 RGB 图像计算 PSNR（载体 vs 隐写）。"""
+    return psnr(_to_rgb_array(cover), _to_rgb_array(stego))
 
 
 def _text_to_bits(text: str) -> list[int]:
