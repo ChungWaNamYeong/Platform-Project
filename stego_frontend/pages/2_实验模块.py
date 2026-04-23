@@ -20,6 +20,13 @@ from PIL import Image
 
 from stego_frontend.modules import auth
 from stego_frontend.modules import branding
+from stego_logic.dct_steg import (
+    build_histogram_figure as build_dct_histogram_figure,
+    embed_message as embed_dct_message,
+    estimate_capacity as estimate_dct_capacity,
+    extract_message as extract_dct_message,
+    psnr_rgb_images as psnr_dct_rgb_images,
+)
 from stego_logic.lsb_steg import (
     build_bit_plane_payload,
     build_histogram_figure,
@@ -42,6 +49,21 @@ LAB_IDLE_AUTO_STOP_SECONDS = 300.0
 MAX_UPLOAD_IMAGE_MB = 5
 MAX_UPLOAD_IMAGE_BYTES = MAX_UPLOAD_IMAGE_MB * 1024 * 1024
 RECORD_PAGE_SIZE = 20
+TOPIC_STATE_PREFIX = {
+    "空域 LSB 隐写": "lsb",
+    "频域 DCT 隐写": "dct",
+}
+
+
+def _state_prefix_by_topic(topic: str) -> str:
+    """根据实验类型返回会话状态前缀。"""
+    return TOPIC_STATE_PREFIX.get(topic, "")
+
+
+def _state_key(topic: str, suffix: str) -> str:
+    """构造当前实验的会话键名。"""
+    prefix = _state_prefix_by_topic(topic)
+    return f"{prefix}_{suffix}" if prefix else suffix
 
 
 def _now_shanghai_iso() -> str:
@@ -54,6 +76,15 @@ def _touch_lab_experiment_activity() -> None:
     st.session_state.pop("lab_idle_shutdown_deadline", None)
 
 
+def _clear_experiment_runtime_state() -> None:
+    """清理实验运行期状态，避免跨实验残留。"""
+    st.session_state.pop("lab_resource_tracker", None)
+    st.session_state.pop("lab_idle_shutdown_deadline", None)
+    for prefix in TOPIC_STATE_PREFIX.values():
+        st.session_state.pop(f"{prefix}_embed_started_at", None)
+        st.session_state.pop(f"{prefix}_auto_save_pending", None)
+
+
 def _maybe_auto_stop_idle_sandbox(running_run: dict[str, Any] | None) -> None:
     """实验记录保存后若超过设定时间无新的实验操作，则自动停止当前用户沙箱。"""
     deadline = st.session_state.get("lab_idle_shutdown_deadline")
@@ -62,9 +93,7 @@ def _maybe_auto_stop_idle_sandbox(running_run: dict[str, Any] | None) -> None:
     if time.monotonic() < deadline:
         return
     result = auth.api_request("POST", "/labs/sandbox/stop", with_auth=True, timeout=60)
-    st.session_state.pop("lab_idle_shutdown_deadline", None)
-    st.session_state.pop("lab_resource_tracker", None)
-    st.session_state.pop("lsb_embed_started_at", None)
+    _clear_experiment_runtime_state()
     if result["ok"]:
         _set_feedback(
             "warning",
@@ -178,10 +207,7 @@ def _stop_sandbox() -> None:
         _set_feedback("warning", detail)
     else:
         _set_feedback("success", detail)
-    st.session_state.pop("lab_resource_tracker", None)
-    st.session_state.pop("lab_idle_shutdown_deadline", None)
-    st.session_state.pop("lsb_embed_started_at", None)
-    st.session_state.pop("lsb_auto_save_pending", None)
+    _clear_experiment_runtime_state()
 
 
 def _admin_force_stop(run_id: int) -> None:
@@ -281,8 +307,9 @@ def _collect_experiment_resource_sample(
     """基于用户运行态 metrics 累计实验过程采样。"""
     if not running_run:
         return
-    # LSB 实验仅在执行隐写之后才开始累计，避免把沙箱启动前的空闲算进实验窗口
-    if experiment_name == "空域 LSB 隐写" and not st.session_state.get("lsb_embed_started_at"):
+    embed_started_key = _state_key(experiment_name, "embed_started_at")
+    # 隐写实验仅在执行隐写之后才开始累计，避免把沙箱启动前的空闲算进实验窗口
+    if _state_prefix_by_topic(experiment_name) and not st.session_state.get(embed_started_key):
         return
     metrics = (status_data or {}).get("running_metrics") or {}
     if not metrics or metrics.get("error"):
@@ -299,7 +326,7 @@ def _collect_experiment_resource_sample(
         tracker = {
             "run_id": run_id,
             "experiment_name": experiment_name,
-            "started_at": st.session_state.get("lsb_embed_started_at"),
+            "started_at": st.session_state.get(embed_started_key),
             "samples": [],
         }
 
@@ -1033,6 +1060,7 @@ def _render_psnr_banner(
 
 def _auto_save_experiment_record(
     *,
+    state_prefix: str,
     experiment_name: str,
     running_run: dict[str, Any] | None,
     cover_image: Image.Image,
@@ -1045,12 +1073,17 @@ def _auto_save_experiment_record(
     resource_summary: dict[str, Any] | None = None,
 ) -> None:
     """实验结果就绪后自动写入后端记录。"""
-    if not st.session_state.get("lsb_auto_save_pending"):
+    auto_save_pending_key = f"{state_prefix}_auto_save_pending"
+    last_signature_key = f"{state_prefix}_last_record_signature"
+    last_error_signature_key = f"{state_prefix}_last_record_error_signature"
+    embed_started_key = f"{state_prefix}_embed_started_at"
+
+    if not st.session_state.get(auto_save_pending_key):
         return
 
     cover_b64 = _image_to_b64(cover_image)
     stego_b64 = _image_to_b64(stego_image)
-    embed_started = st.session_state.get("lsb_embed_started_at")
+    embed_started = st.session_state.get(embed_started_key)
     signature_payload = {
         "experiment_name": experiment_name,
         "cover_digest": hashlib.sha256(cover_b64.encode("utf-8")).hexdigest(),
@@ -1064,7 +1097,7 @@ def _auto_save_experiment_record(
     signature = hashlib.sha256(
         json.dumps(signature_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
-    if st.session_state.get("lsb_last_record_signature") == signature:
+    if st.session_state.get(last_signature_key) == signature:
         return
 
     payload: dict[str, Any] = {
@@ -1101,9 +1134,9 @@ def _auto_save_experiment_record(
         timeout=45,
     )
     if result["ok"]:
-        st.session_state.lsb_last_record_signature = signature
-        st.session_state.lsb_last_record_error_signature = ""
-        st.session_state.lsb_auto_save_pending = False
+        st.session_state[last_signature_key] = signature
+        st.session_state[last_error_signature_key] = ""
+        st.session_state[auto_save_pending_key] = False
         st.caption("已自动记录本次实验结果。")
         # 实验结束后启动空闲关箱倒计时（新的实验操作会取消）
         st.session_state.lab_idle_shutdown_deadline = (
@@ -1111,8 +1144,8 @@ def _auto_save_experiment_record(
         )
         return
 
-    if st.session_state.get("lsb_last_record_error_signature") != signature:
-        st.session_state.lsb_last_record_error_signature = signature
+    if st.session_state.get(last_error_signature_key) != signature:
+        st.session_state[last_error_signature_key] = signature
         st.warning(f"自动记录失败：{result['error']}")
 
 
@@ -1528,6 +1561,201 @@ def _render_lsb_experiment_panel(
             )
 
     _auto_save_experiment_record(
+        state_prefix="lsb",
+        experiment_name=selected_topic,
+        running_run=running_run,
+        cover_image=cover_saved,
+        stego_image=stego_saved,
+        psnr_db=psnr_db,
+        histogram_data=histogram_data,
+        bit_plane_data={
+            "cover": (bit_plane_payload.get("cover") or {}).get("planes", []),
+            "stego": (bit_plane_payload.get("stego") or {}).get("planes", []),
+        },
+        source_text=source_text,
+        extracted_text=extracted,
+        resource_summary=resource_summary,
+    )
+
+
+def _render_dct_experiment_panel(
+    running_run: dict[str, Any] | None,
+    selected_topic: str,
+    status_data: dict[str, Any] | None,
+    running_metrics: dict[str, Any] | None,
+) -> None:
+    """渲染频域 DCT 隐写实验交互区。"""
+    if selected_topic != "频域 DCT 隐写":
+        return
+
+    st.divider()
+    st.subheader("频域 DCT 隐写实验")
+    if not running_run:
+        st.info("请先点击“启动实验环境”，再进行 DCT 隐写实验。")
+        return
+
+    uploaded_file = st.file_uploader(
+        "上传载体图（PNG/JPG）",
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=False,
+        key="dct_cover_uploader",
+    )
+    message_text = st.text_area(
+        "输入要嵌入的文本",
+        height=120,
+        placeholder="请输入需要隐藏的文本内容...",
+        key="dct_message_text",
+    )
+
+    cover_image: Image.Image | None = None
+    if uploaded_file is not None:
+        file_size = int(getattr(uploaded_file, "size", 0) or 0)
+        if file_size > MAX_UPLOAD_IMAGE_BYTES:
+            st.error(
+                f"上传失败：图像大小 {file_size / 1024 / 1024:.2f} MB，超过 {MAX_UPLOAD_IMAGE_MB} MB 限制。"
+            )
+        else:
+            cover_image = Image.open(uploaded_file).convert("RGB")
+            _, cap_bytes = estimate_dct_capacity(cover_image)
+            st.caption(f"当前图像可用隐写容量约：{cap_bytes} 字节（UTF-8）")
+
+    if st.button("执行 DCT 隐写", type="primary", width="stretch"):
+        _touch_lab_experiment_activity()
+        if cover_image is None:
+            st.error("请先上传载体图。")
+        elif not message_text.strip():
+            st.error("请先输入要嵌入的文本。")
+        else:
+            try:
+                stego_image = embed_dct_message(cover_image, message_text)
+            except Exception as exc:
+                st.error(f"隐写失败：{exc}")
+            else:
+                st.session_state.dct_embed_started_at = _now_shanghai_iso()
+                st.session_state.dct_auto_save_pending = True
+                run_id = running_run.get("id")
+                if run_id is not None:
+                    st.session_state.lab_resource_tracker = {
+                        "run_id": run_id,
+                        "experiment_name": selected_topic,
+                        "started_at": st.session_state.dct_embed_started_at,
+                        "samples": [],
+                    }
+                st.session_state.dct_cover_image = cover_image
+                st.session_state.dct_stego_image = stego_image
+                st.session_state.dct_source_text = message_text
+                st.success("隐写完成，已生成隐写图。")
+
+    cover_saved = st.session_state.get("dct_cover_image")
+    stego_saved = st.session_state.get("dct_stego_image")
+    if not cover_saved or not stego_saved:
+        return
+
+    col_cover, col_stego = st.columns(2)
+    with col_cover:
+        st.markdown("**载体图**")
+        st.image(cover_saved, width="stretch")
+    with col_stego:
+        st.markdown("**隐写图**")
+        st.image(stego_saved, width="stretch")
+        buf = BytesIO()
+        stego_saved.save(buf, format="PNG")
+        st.download_button(
+            "下载隐写图（PNG）",
+            data=buf.getvalue(),
+            file_name="dct_stego.png",
+            mime="image/png",
+            width="stretch",
+            key="dct_download_stego_image",
+        )
+
+    try:
+        psnr_db = psnr_dct_rgb_images(cover_saved, stego_saved)
+    except Exception:
+        psnr_db = None
+    _render_psnr_banner(cover_saved, stego_saved, psnr_db=psnr_db)
+
+    st.markdown("**直方图对比（载体图 vs 隐写图）**")
+    histogram_data: dict[str, Any] = {}
+    try:
+        fig = build_dct_histogram_figure(cover_saved, stego_saved)
+    except Exception as exc:
+        st.error(f"直方图渲染失败：{exc}")
+    else:
+        histogram_data = _json_safe(fig)
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={
+                "scrollZoom": True,
+                "displaylogo": False,
+                "modeBarButtonsToAdd": ["zoom2d", "pan2d", "resetScale2d"],
+            },
+        )
+        st.caption("可使用鼠标滚轮/框选自由缩放图表，双击图表可恢复全尺度。")
+
+    st.markdown("**位平面分解（载体图 vs 隐写图）**")
+    bit_plane_payload = _render_bit_plane_decomposition(cover_saved, stego_saved)
+
+    source_text = st.session_state.get("dct_source_text", "")
+    try:
+        extracted = extract_dct_message(stego_saved)
+    except Exception as exc:
+        extracted = ""
+        st.error(f"提取失败：{exc}")
+
+    st.markdown("**文本提取校验**")
+    col_src, col_ext = st.columns(2)
+    with col_src:
+        st.text_area("原始文本", value=source_text, height=120, disabled=True, key="dct_source_text_preview")
+    with col_ext:
+        st.text_area("提取文本", value=extracted, height=120, disabled=True, key="dct_extracted_text_preview")
+
+    if source_text and extracted:
+        if source_text == extracted:
+            st.success("提取结果与原始文本一致。")
+        else:
+            mismatch_idx = next(
+                (i for i, (a, b) in enumerate(zip(source_text, extracted)) if a != b),
+                min(len(source_text), len(extracted)),
+            )
+            st.warning(
+                f"提取结果与原始文本不一致，首个差异位置：{mismatch_idx}。"
+            )
+
+    # 保存前再采一次：main 开头的 collect 早于「执行隐写」重置 tracker，否则 samples 常为空
+    if status_data is not None:
+        _collect_experiment_resource_sample(status_data, running_run, selected_topic)
+    tracker_summary = _build_experiment_resource_summary(running_run, selected_topic)
+    resource_summary = _merge_resource_summary_with_fallback(
+        tracker_summary,
+        running_metrics,
+        st.session_state.get("dct_embed_started_at"),
+    )
+    if resource_summary:
+        st.markdown("**实验过程资源统计（当前会话）**")
+        summary_cols = st.columns(3)
+        with summary_cols[0]:
+            st.metric(
+                "CPU 峰值 / 均值",
+                f"{resource_summary.get('cpu_peak_percent', 0.0):.2f}%",
+                f"均值 {resource_summary.get('cpu_avg_percent', 0.0):.2f}%",
+            )
+        with summary_cols[1]:
+            st.metric(
+                "内存峰值 / 均值",
+                _format_bytes(resource_summary.get("memory_peak_bytes")),
+                f"均值 {_format_bytes(resource_summary.get('memory_avg_bytes'))}",
+            )
+        with summary_cols[2]:
+            st.metric(
+                "实验耗时",
+                f"{resource_summary.get('duration_seconds', 0.0):.1f}s",
+                f"样本 {resource_summary.get('sample_count', 0)} 条",
+            )
+
+    _auto_save_experiment_record(
+        state_prefix="dct",
         experiment_name=selected_topic,
         running_run=running_run,
         cover_image=cover_saved,
@@ -1579,9 +1807,7 @@ def main() -> None:
         running_run = status_data.get("running")
         running_metrics = status_data.get("running_metrics")
         if not running_run:
-            st.session_state.pop("lab_idle_shutdown_deadline", None)
-            st.session_state.pop("lab_resource_tracker", None)
-            st.session_state.pop("lsb_embed_started_at", None)
+            _clear_experiment_runtime_state()
         _maybe_auto_stop_idle_sandbox(running_run)
 
     if status_data is not None:
@@ -1599,6 +1825,7 @@ def main() -> None:
             st.rerun()
 
     _render_lsb_experiment_panel(running_run, selected_topic, status_data, running_metrics)
+    _render_dct_experiment_panel(running_run, selected_topic, status_data, running_metrics)
     _render_experiment_records_panel(current_user)
     _render_admin_panel(current_user)
 
