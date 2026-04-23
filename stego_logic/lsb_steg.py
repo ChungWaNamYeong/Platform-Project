@@ -167,19 +167,22 @@ def build_histogram_figure(cover_image: Image.Image, stego_image: Image.Image):
     fig.update_xaxes(title_text="Gray Level (0-255)", row=2, col=1)
     fig.update_yaxes(title_text="Normalized Count", row=1, col=1)
     fig.update_yaxes(title_text="Delta Count", row=2, col=1)
+    # 右侧留白需容纳「Max delta」说明框；xanchor=left + x=1 使框从绘图区右缘向外延伸，避免压住柱状图
     fig.update_layout(
         height=760,
         hovermode="x unified",
         bargap=0,
         barmode="overlay",
-        margin={"l": 70, "r": 230, "t": 80, "b": 60},
+        margin={"l": 70, "r": 260, "t": 80, "b": 60},
         legend={"orientation": "h", "x": 0, "y": 1.12},
     )
     fig.add_annotation(
-        x=1.02,
+        x=1.0,
         y=0.92,
         xref="paper",
         yref="paper",
+        xanchor="left",
+        yanchor="top",
         showarrow=False,
         align="left",
         bordercolor="#d1d5db",

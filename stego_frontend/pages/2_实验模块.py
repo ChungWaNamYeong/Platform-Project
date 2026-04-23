@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import base64
 import csv
+from datetime import datetime
 import hashlib
 from io import BytesIO, StringIO
 import json
 import time
 from typing import Any
+from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -32,6 +35,45 @@ EXPERIMENT_TOPICS = (
     "AI 水印检测",
 )
 
+# 与 Django TIME_ZONE=Asia/Shanghai 一致
+_SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+# 实验记录自动保存后，无新的实验操作则在此时间后自动关闭沙箱（秒）
+LAB_IDLE_AUTO_STOP_SECONDS = 300.0
+MAX_UPLOAD_IMAGE_MB = 5
+MAX_UPLOAD_IMAGE_BYTES = MAX_UPLOAD_IMAGE_MB * 1024 * 1024
+RECORD_PAGE_SIZE = 20
+
+
+def _now_shanghai_iso() -> str:
+    """当前时间（UTC+8）ISO 字符串，供后端与展示统一使用。"""
+    return datetime.now(tz=_SHANGHAI_TZ).isoformat()
+
+
+def _touch_lab_experiment_activity() -> None:
+    """用户进行新的实验操作时取消“实验后空闲自动关箱”倒计时。"""
+    st.session_state.pop("lab_idle_shutdown_deadline", None)
+
+
+def _maybe_auto_stop_idle_sandbox(running_run: dict[str, Any] | None) -> None:
+    """实验记录保存后若超过设定时间无新的实验操作，则自动停止当前用户沙箱。"""
+    deadline = st.session_state.get("lab_idle_shutdown_deadline")
+    if not running_run or not deadline:
+        return
+    if time.monotonic() < deadline:
+        return
+    result = auth.api_request("POST", "/labs/sandbox/stop", with_auth=True, timeout=60)
+    st.session_state.pop("lab_idle_shutdown_deadline", None)
+    st.session_state.pop("lab_resource_tracker", None)
+    st.session_state.pop("lsb_embed_started_at", None)
+    if result["ok"]:
+        _set_feedback(
+            "warning",
+            "实验结束后已超过 5 分钟无新的实验操作，沙箱已自动关闭。",
+        )
+    else:
+        _set_feedback("error", f"自动关闭沙箱失败：{result['error']}")
+    st.rerun()
+
 
 def _set_feedback(level: str, message: str) -> None:
     st.session_state.lab_feedback = {"level": level, "message": message}
@@ -51,7 +93,10 @@ def _render_feedback() -> None:
         st.error(message)
 
 
-def _render_running_status(run: dict[str, Any] | None) -> None:
+def _render_running_status(
+    run: dict[str, Any] | None,
+    running_metrics: dict[str, Any] | None = None,
+) -> None:
     """展示当前沙箱状态。"""
     if not run:
         st.warning("当前没有运行中的沙箱。")
@@ -61,6 +106,20 @@ def _render_running_status(run: dict[str, Any] | None) -> None:
     st.write(f"容器 ID：`{run.get('container_id', '-')}`")
     st.write(f"实验课题：{run.get('experiment_topic', '-')}")
     st.write(f"访问端口：{run.get('web_port', '-')}")
+    metrics = running_metrics or {}
+    if metrics and not metrics.get("error"):
+        cpu_percent = float(metrics.get("cpu_percent") or 0.0)
+        memory_percent = float(metrics.get("memory_percent") or 0.0)
+        memory_usage = _format_bytes(metrics.get("memory_usage_bytes"))
+        memory_limit = _format_bytes(metrics.get("mem_limit_bytes") or metrics.get("memory_limit_bytes"))
+        metric_cols = st.columns(3)
+        with metric_cols[0]:
+            st.metric("当前 CPU", f"{cpu_percent:.2f}%")
+        with metric_cols[1]:
+            st.metric("当前内存", f"{memory_percent:.2f}%", f"{memory_usage} / {memory_limit}")
+        with metric_cols[2]:
+            st.caption(f"CPU 配额：{metrics.get('cpu_limit_cores') or '-'} 核")
+            st.caption(f"采样：{_format_dt(metrics.get('sampled_at'))}")
 
 
 def _load_status() -> dict[str, Any] | None:
@@ -105,6 +164,7 @@ def _start_sandbox(experiment_topic: str) -> None:
         _set_feedback("warning", "检测到你已有运行中的沙箱，已复用现有实例。")
     else:
         _set_feedback("success", "实验环境启动成功。")
+    _touch_lab_experiment_activity()
 
 
 def _stop_sandbox() -> None:
@@ -118,6 +178,10 @@ def _stop_sandbox() -> None:
         _set_feedback("warning", detail)
     else:
         _set_feedback("success", detail)
+    st.session_state.pop("lab_resource_tracker", None)
+    st.session_state.pop("lab_idle_shutdown_deadline", None)
+    st.session_state.pop("lsb_embed_started_at", None)
+    st.session_state.pop("lsb_auto_save_pending", None)
 
 
 def _admin_force_stop(run_id: int) -> None:
@@ -174,6 +238,162 @@ def _format_dt(value: Any) -> str:
     return text
 
 
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    """解析后端 ISO 时间，统一转为带时区对象（默认按 Asia/Shanghai）。"""
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=_SHANGHAI_TZ)
+    return parsed
+
+
+def _format_bytes(value: Any) -> str:
+    """将字节数格式化为可读文本。"""
+    if value in (None, ""):
+        return "-"
+    try:
+        raw = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if raw < 0:
+        return "-"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = raw
+    unit_idx = 0
+    while size >= 1024 and unit_idx < len(units) - 1:
+        size /= 1024
+        unit_idx += 1
+    return f"{size:.2f} {units[unit_idx]}"
+
+
+def _collect_experiment_resource_sample(
+    status_data: dict[str, Any] | None,
+    running_run: dict[str, Any] | None,
+    experiment_name: str,
+) -> None:
+    """基于用户运行态 metrics 累计实验过程采样。"""
+    if not running_run:
+        return
+    # LSB 实验仅在执行隐写之后才开始累计，避免把沙箱启动前的空闲算进实验窗口
+    if experiment_name == "空域 LSB 隐写" and not st.session_state.get("lsb_embed_started_at"):
+        return
+    metrics = (status_data or {}).get("running_metrics") or {}
+    if not metrics or metrics.get("error"):
+        return
+    run_id = running_run.get("id")
+    if run_id is None:
+        return
+
+    tracker = st.session_state.get("lab_resource_tracker") or {}
+    if (
+        tracker.get("run_id") != run_id
+        or tracker.get("experiment_name") != experiment_name
+    ):
+        tracker = {
+            "run_id": run_id,
+            "experiment_name": experiment_name,
+            "started_at": st.session_state.get("lsb_embed_started_at"),
+            "samples": [],
+        }
+
+    sample = {
+        "sampled_at": metrics.get("sampled_at") or _now_shanghai_iso(),
+        "cpu_percent": float(metrics.get("cpu_percent") or 0.0),
+        "memory_usage_bytes": int(metrics.get("memory_usage_bytes") or 0),
+    }
+    tracker_samples = tracker.get("samples") or []
+    tracker_samples.append(sample)
+    if len(tracker_samples) > 1200:
+        tracker_samples = tracker_samples[-1200:]
+    tracker["samples"] = tracker_samples
+    st.session_state.lab_resource_tracker = tracker
+
+
+def _build_experiment_resource_summary(
+    running_run: dict[str, Any] | None,
+    experiment_name: str,
+) -> dict[str, Any]:
+    """根据当前会话采样计算资源峰值/均值与实验耗时。"""
+    tracker = st.session_state.get("lab_resource_tracker") or {}
+    if not running_run or not tracker:
+        return {}
+    if tracker.get("run_id") != running_run.get("id"):
+        return {}
+    if tracker.get("experiment_name") != experiment_name:
+        return {}
+
+    samples = tracker.get("samples") or []
+    if not samples:
+        return {}
+
+    cpu_values = [max(float(s.get("cpu_percent") or 0.0), 0.0) for s in samples]
+    mem_values = [max(int(s.get("memory_usage_bytes") or 0), 0) for s in samples]
+    started_at_dt = _parse_iso_datetime(tracker.get("started_at"))
+    if not started_at_dt:
+        started_at_dt = _parse_iso_datetime(samples[0].get("sampled_at"))
+    duration_seconds = None
+    if started_at_dt:
+        now_sh = datetime.now(tz=_SHANGHAI_TZ)
+        started_at_dt = started_at_dt.astimezone(_SHANGHAI_TZ)
+        duration_seconds = max((now_sh - started_at_dt).total_seconds(), 0.0)
+
+    return {
+        "cpu_peak_percent": round(max(cpu_values), 4),
+        "cpu_avg_percent": round(sum(cpu_values) / len(cpu_values), 4),
+        "memory_peak_bytes": int(max(mem_values)),
+        "memory_avg_bytes": int(sum(mem_values) / len(mem_values)),
+        "duration_seconds": round(duration_seconds, 3) if duration_seconds is not None else None,
+        "sample_count": len(samples),
+    }
+
+
+def _fallback_resource_summary_from_metrics(
+    running_metrics: dict[str, Any] | None,
+    embed_started_iso: str | None,
+) -> dict[str, Any]:
+    """无采样序列时，用当前一次 Docker 指标兜底（常见于保存发生在同一轮脚本末尾）。"""
+    if not running_metrics or running_metrics.get("error"):
+        return {}
+    cpu = float(running_metrics.get("cpu_percent") or 0.0)
+    mem = int(running_metrics.get("memory_usage_bytes") or 0)
+    duration_seconds = None
+    started = _parse_iso_datetime(embed_started_iso)
+    if started:
+        now_sh = datetime.now(tz=_SHANGHAI_TZ)
+        duration_seconds = max(
+            (now_sh - started.astimezone(_SHANGHAI_TZ)).total_seconds(),
+            0.0,
+        )
+    return {
+        "cpu_peak_percent": round(cpu, 4),
+        "cpu_avg_percent": round(cpu, 4),
+        "memory_peak_bytes": mem,
+        "memory_avg_bytes": mem,
+        "duration_seconds": round(duration_seconds, 3) if duration_seconds is not None else None,
+        "sample_count": 1,
+    }
+
+
+def _merge_resource_summary_with_fallback(
+    tracker_summary: dict[str, Any],
+    running_metrics: dict[str, Any] | None,
+    embed_started_iso: str | None,
+) -> dict[str, Any]:
+    """优先使用累计采样；若无样本则用当前 metrics 兜底。"""
+    base = dict(tracker_summary or {})
+    if base.get("sample_count"):
+        return base
+    fb = _fallback_resource_summary_from_metrics(running_metrics, embed_started_iso)
+    return fb if fb else base
+
+
 def _image_to_b64(image: Image.Image) -> str:
     """将 PIL 图片编码为 PNG Base64 字符串。"""
     buf = BytesIO()
@@ -214,6 +434,11 @@ def _records_to_csv_text(records: list[dict[str, Any]]) -> str:
             "started_at",
             "completed_at",
             "psnr",
+            "cpu_peak_percent",
+            "cpu_avg_percent",
+            "memory_peak_bytes",
+            "memory_avg_bytes",
+            "duration_seconds",
             "source_text",
             "extracted_text",
             "cover_image_b64_length",
@@ -221,7 +446,7 @@ def _records_to_csv_text(records: list[dict[str, Any]]) -> str:
             "created_at",
         ]
     )
-    for item in records:
+    for idx, item in enumerate(records):
         writer.writerow(
             [
                 item.get("id", ""),
@@ -230,6 +455,11 @@ def _records_to_csv_text(records: list[dict[str, Any]]) -> str:
                 item.get("started_at", ""),
                 item.get("completed_at", ""),
                 item.get("psnr", ""),
+                item.get("cpu_peak_percent", ""),
+                item.get("cpu_avg_percent", ""),
+                item.get("memory_peak_bytes", ""),
+                item.get("memory_avg_bytes", ""),
+                item.get("duration_seconds", ""),
                 item.get("source_text", ""),
                 item.get("extracted_text", ""),
                 len(str(item.get("cover_image_b64") or "")),
@@ -240,6 +470,23 @@ def _records_to_csv_text(records: list[dict[str, Any]]) -> str:
     return output.getvalue()
 
 
+def _fetch_record_detail(record_id: int) -> dict[str, Any] | None:
+    """按需拉取单条实验记录详情（包含大字段），并缓存到 session。"""
+    cache_key = f"record_detail_cache_{record_id}"
+    cached = st.session_state.get(cache_key)
+    if isinstance(cached, dict) and cached:
+        return cached
+    result = auth.api_request("GET", f"/labs/records/{record_id}", with_auth=True, timeout=60)
+    if not result["ok"]:
+        st.error(f"读取记录详情失败（#{record_id}）：{result['error']}")
+        return None
+    detail = result.get("data") or {}
+    if isinstance(detail, dict):
+        st.session_state[cache_key] = detail
+        return detail
+    return None
+
+
 def _render_admin_panel(user: dict[str, Any]) -> None:
     """超级管理员查看全局沙箱运行记录。"""
     if not user.get("is_superuser"):
@@ -247,6 +494,73 @@ def _render_admin_panel(user: dict[str, Any]) -> None:
 
     st.divider()
     st.subheader("管理员沙箱视图")
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1, 2], gap="small")
+    with ctrl_col1:
+        auto_refresh = st.toggle(
+            "自动刷新监控",
+            key="admin_metrics_auto_refresh",
+            value=True,
+        )
+    with ctrl_col2:
+        refresh_seconds = st.slider(
+            "刷新间隔(秒)",
+            min_value=2,
+            max_value=30,
+            value=5,
+            step=1,
+            key="admin_metrics_refresh_seconds",
+        )
+    with ctrl_col3:
+        st.caption("可查看每个运行中沙箱的 CPU/内存实时占用及资源配额。")
+    if st.button("立即刷新监控", key="admin_metrics_manual_refresh"):
+        st.rerun()
+
+    metrics_result = auth.api_request("GET", "/labs/sandbox/admin/metrics", with_auth=True, timeout=30)
+    metrics_items = ((metrics_result.get("data") or {}).get("items")) if metrics_result.get("ok") else []
+    metrics_map = {str(item.get("run_id")): item for item in (metrics_items or [])}
+    if not metrics_result["ok"]:
+        st.warning(f"读取实时监控失败：{metrics_result['error']}")
+    elif metrics_items:
+        st.markdown("**运行中沙箱资源仪表**")
+        for item in metrics_items:
+            run_id = item.get("run_id")
+            metrics = item.get("metrics") or {}
+            cpu_percent = float(metrics.get("cpu_percent") or 0.0)
+            mem_percent = float(metrics.get("memory_percent") or 0.0)
+            mem_usage = _format_bytes(metrics.get("memory_usage_bytes"))
+            mem_limit = _format_bytes(metrics.get("mem_limit_bytes") or metrics.get("memory_limit_bytes"))
+            sampled_at = _format_dt(metrics.get("sampled_at"))
+            info_cols = st.columns([1.4, 1.4, 1.4, 1.8], gap="small")
+            with info_cols[0]:
+                st.metric(
+                    label=f"#{run_id} CPU",
+                    value=f"{cpu_percent:.2f}%",
+                    delta=f"上限 {metrics.get('cpu_limit_cores') or '-'} 核",
+                )
+                st.progress(min(max(cpu_percent / 100.0, 0.0), 1.0))
+            with info_cols[1]:
+                st.metric(
+                    label="内存占用",
+                    value=f"{mem_percent:.2f}%",
+                    delta=f"{mem_usage} / {mem_limit}",
+                )
+                st.progress(min(max(mem_percent / 100.0, 0.0), 1.0))
+            with info_cols[2]:
+                st.caption(f"用户：{item.get('username') or '-'}")
+                st.caption(f"课题：{item.get('experiment_topic') or '-'}")
+                st.caption(f"容器：{_short_container_id(item.get('container_id'))}")
+            with info_cols[3]:
+                st.caption(f"采样时间：{sampled_at}")
+                st.caption(
+                    f"CPU 配额：quota={metrics.get('cpu_quota') or '-'} / period={metrics.get('cpu_period') or '-'}"
+                )
+                st.caption(f"内存配额：{mem_limit}")
+            if item.get("error"):
+                st.warning(f"记录 #{run_id} 采样异常：{item.get('error')}")
+            st.markdown("---")
+    else:
+        st.caption("当前没有运行中沙箱的实时监控数据。")
+
     result = auth.api_request("GET", "/labs/sandbox/admin/runs", with_auth=True, timeout=30)
     if not result["ok"]:
         st.error(f"读取全局记录失败：{result['error']}")
@@ -257,7 +571,7 @@ def _render_admin_panel(user: dict[str, Any]) -> None:
         return
 
     # 列宽比例：ID 约四位数宽度、时间列略宽、状态列为文字胶囊不占满格
-    col_weights = [0.32, 0.95, 1.35, 0.68, 1.15, 0.36, 1.12, 1.12, 0.78]
+    col_weights = [0.32, 0.95, 1.35, 0.68, 1.15, 0.36, 0.86, 0.96, 1.12, 1.12, 0.78]
     headers = (
         "ID",
         "用户",
@@ -265,6 +579,8 @@ def _render_admin_panel(user: dict[str, Any]) -> None:
         "状态",
         "容器",
         "端口",
+        "CPU",
+        "内存",
         "开始时间",
         "停止时间",
         "操作",
@@ -292,10 +608,22 @@ def _render_admin_panel(user: dict[str, Any]) -> None:
             p = item.get("web_port")
             st.caption(str(p) if p is not None else "-")
         with row_cols[6]:
-            st.caption(_format_dt(item.get("started_at")))
+            metrics = metrics_map.get(str(rid), {}).get("metrics") or {}
+            cpu_percent = metrics.get("cpu_percent")
+            st.caption(f"{float(cpu_percent):.2f}%" if cpu_percent is not None else "-")
         with row_cols[7]:
-            st.caption(_format_dt(item.get("stopped_at")))
+            metrics = metrics_map.get(str(rid), {}).get("metrics") or {}
+            mem_percent = metrics.get("memory_percent")
+            if mem_percent is None:
+                st.caption("-")
+            else:
+                usage = _format_bytes(metrics.get("memory_usage_bytes"))
+                st.caption(f"{float(mem_percent):.2f}% ({usage})")
         with row_cols[8]:
+            st.caption(_format_dt(item.get("started_at")))
+        with row_cols[9]:
+            st.caption(_format_dt(item.get("stopped_at")))
+        with row_cols[10]:
             if rid is not None and can_force_stop:
                 if st.button("强制停止", key=f"admin_stop_run_{rid}", width="stretch"):
                     _admin_force_stop(int(rid))
@@ -714,10 +1042,15 @@ def _auto_save_experiment_record(
     bit_plane_data: dict[str, Any],
     source_text: str,
     extracted_text: str,
+    resource_summary: dict[str, Any] | None = None,
 ) -> None:
     """实验结果就绪后自动写入后端记录。"""
+    if not st.session_state.get("lsb_auto_save_pending"):
+        return
+
     cover_b64 = _image_to_b64(cover_image)
     stego_b64 = _image_to_b64(stego_image)
+    embed_started = st.session_state.get("lsb_embed_started_at")
     signature_payload = {
         "experiment_name": experiment_name,
         "cover_digest": hashlib.sha256(cover_b64.encode("utf-8")).hexdigest(),
@@ -725,6 +1058,8 @@ def _auto_save_experiment_record(
         "psnr": psnr_db,
         "source_text": source_text,
         "extracted_text": extracted_text,
+        # 使用“执行隐写时间”区分不同实验轮次，避免切页/刷新产生重复写入
+        "embed_started_at": embed_started,
     }
     signature = hashlib.sha256(
         json.dumps(signature_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -742,9 +1077,22 @@ def _auto_save_experiment_record(
         "source_text": source_text,
         "extracted_text": extracted_text,
     }
-    started_at = (running_run or {}).get("started_at")
-    if started_at:
-        payload["started_at"] = started_at
+    # 实验启动时间以「执行 LSB 隐写」时刻为准（见 lsb_embed_started_at）
+    if embed_started:
+        payload["started_at"] = embed_started
+    else:
+        payload["started_at"] = _now_shanghai_iso()
+    if resource_summary:
+        # 显式写入数值（含 0），避免 omit 导致后端无字段
+        for key in (
+            "cpu_peak_percent",
+            "cpu_avg_percent",
+            "memory_peak_bytes",
+            "memory_avg_bytes",
+            "duration_seconds",
+        ):
+            if key in resource_summary and resource_summary[key] is not None:
+                payload[key] = resource_summary[key]
     result = auth.api_request(
         "POST",
         "/labs/records",
@@ -755,7 +1103,12 @@ def _auto_save_experiment_record(
     if result["ok"]:
         st.session_state.lsb_last_record_signature = signature
         st.session_state.lsb_last_record_error_signature = ""
+        st.session_state.lsb_auto_save_pending = False
         st.caption("已自动记录本次实验结果。")
+        # 实验结束后启动空闲关箱倒计时（新的实验操作会取消）
+        st.session_state.lab_idle_shutdown_deadline = (
+            time.monotonic() + LAB_IDLE_AUTO_STOP_SECONDS
+        )
         return
 
     if st.session_state.get("lsb_last_record_error_signature") != signature:
@@ -767,7 +1120,35 @@ def _render_experiment_records_panel(current_user: dict[str, Any]) -> None:
     """展示实验记录列表、删除与导出能力。"""
     st.divider()
     st.subheader("实验记录")
-    result = auth.api_request("GET", "/labs/records", with_auth=True, timeout=30)
+
+    filter_cols = st.columns(3 if current_user.get("is_superuser") else 2)
+    with filter_cols[0]:
+        experiment_filter = st.selectbox(
+            "实验类型筛选",
+            options=["全部", *EXPERIMENT_TOPICS],
+            key="record_filter_experiment_name",
+        )
+    username_filter = ""
+    if current_user.get("is_superuser"):
+        with filter_cols[1]:
+            username_filter = st.text_input(
+                "按用户名筛选（管理员）",
+                value=st.session_state.get("record_filter_username", ""),
+                key="record_filter_username",
+            ).strip()
+    with filter_cols[-1]:
+        if st.button("刷新记录", key="record_filter_refresh", width="stretch"):
+            st.rerun()
+
+    query_params: dict[str, str] = {}
+    if experiment_filter != "全部":
+        query_params["experiment_name"] = experiment_filter
+    if current_user.get("is_superuser") and username_filter:
+        query_params["username"] = username_filter
+    query_string = urlencode(query_params)
+    list_path = f"/labs/records?{query_string}" if query_string else "/labs/records"
+
+    result = auth.api_request("GET", list_path, with_auth=True, timeout=30)
     if not result["ok"]:
         st.error(f"读取实验记录失败：{result['error']}")
         return
@@ -776,109 +1157,213 @@ def _render_experiment_records_panel(current_user: dict[str, Any]) -> None:
         st.caption("暂无实验记录。完成一次实验后将自动出现在这里。")
         return
 
-    json_text = json.dumps(records, ensure_ascii=False, indent=2)
-    csv_text = _records_to_csv_text(records)
+    total = len(records)
+    total_pages = max((total + RECORD_PAGE_SIZE - 1) // RECORD_PAGE_SIZE, 1)
+    previous_page = int(st.session_state.get("record_page", 1) or 1)
+    previous_page = min(max(previous_page, 1), total_pages)
+    page_cols = st.columns([2, 1, 2])
+    with page_cols[0]:
+        st.caption(f"筛选后共 {total} 条记录")
+    with page_cols[1]:
+        selected_page = st.selectbox(
+            "页码",
+            options=list(range(1, total_pages + 1)),
+            index=previous_page - 1,
+            key="record_page_select",
+        )
+        st.session_state.record_page = selected_page
+    with page_cols[2]:
+        st.caption(f"每页 {RECORD_PAGE_SIZE} 条")
+
+    page_start = (selected_page - 1) * RECORD_PAGE_SIZE
+    page_end = page_start + RECORD_PAGE_SIZE
+    page_records = records[page_start:page_end]
+
+    selected_ids: list[int] = []
+    for item in records:
+        rid = item.get("id")
+        if rid is None:
+            continue
+        if st.session_state.get(f"record_select_{rid}"):
+            selected_ids.append(int(rid))
+
+    action_cols = st.columns(4)
     export_name_prefix = "all" if current_user.get("is_superuser") else "mine"
-    col_json, col_csv = st.columns(2)
-    with col_json:
+    with action_cols[0]:
         st.download_button(
-            "导出当前列表（JSON）",
-            data=json_text.encode("utf-8"),
-            file_name=f"experiment_records_{export_name_prefix}.json",
+            "导出当前筛选（JSON）",
+            data=json.dumps(records, ensure_ascii=False, indent=2).encode("utf-8"),
+            file_name=f"experiment_records_{export_name_prefix}_filtered.json",
             mime="application/json",
             width="stretch",
         )
-    with col_csv:
+    with action_cols[1]:
         st.download_button(
-            "导出当前列表（CSV）",
-            data=csv_text.encode("utf-8-sig"),
-            file_name=f"experiment_records_{export_name_prefix}.csv",
+            "导出当前筛选（CSV）",
+            data=_records_to_csv_text(records).encode("utf-8-sig"),
+            file_name=f"experiment_records_{export_name_prefix}_filtered.csv",
             mime="text/csv",
             width="stretch",
         )
+    with action_cols[2]:
+        st.caption(f"已勾选 {len(selected_ids)} 条")
+    with action_cols[3]:
+        if st.button(
+            "批量删除勾选项",
+            key="bulk_delete_selected_records",
+            width="stretch",
+            disabled=not selected_ids,
+        ):
+            delete_result = auth.api_request(
+                "POST",
+                "/labs/records/bulk-delete",
+                with_auth=True,
+                json_data={"record_ids": selected_ids},
+                timeout=60,
+            )
+            if delete_result["ok"]:
+                payload = delete_result.get("data") or {}
+                for rid in selected_ids:
+                    st.session_state.pop(f"record_select_{rid}", None)
+                    st.session_state.pop(f"record_detail_open_{rid}", None)
+                    st.session_state.pop(f"record_detail_cache_{rid}", None)
+                st.success(
+                    f"批量删除完成：成功 {payload.get('deleted_count', 0)} 条，"
+                    f"忽略 {payload.get('ignored_count', 0)} 条。"
+                )
+                st.rerun()
+            else:
+                st.error(f"批量删除失败：{delete_result['error']}")
 
-    for item in records:
+    for row_idx, item in enumerate(page_records):
         rid = item.get("id")
         owner = str(item.get("username") or "-")
         title = str(item.get("experiment_name") or "-")
         created_at = _format_dt(item.get("created_at"))
+        row_cols = st.columns([0.16, 1], gap="small")
+        with row_cols[0]:
+            if rid is not None:
+                st.checkbox("选择", key=f"record_select_{rid}")
         expander_title = f"#{rid} | {title} | {owner} | {created_at}"
-        with st.expander(expander_title, expanded=False):
-            st.write(f"启动时间：{_format_dt(item.get('started_at'))}")
-            st.write(f"完成时间：{_format_dt(item.get('completed_at'))}")
-            psnr_val = item.get("psnr")
-            st.write(f"PSNR：{psnr_val if psnr_val is not None else '-'}")
-
-            cover_b64 = str(item.get("cover_image_b64") or "")
-            stego_b64 = str(item.get("stego_image_b64") or "")
-            if cover_b64 and stego_b64:
-                img_cols = st.columns(2)
-                with img_cols[0]:
-                    st.markdown("**载体图（记录）**")
-                    st.image(base64.b64decode(cover_b64), width="stretch")
-                with img_cols[1]:
-                    st.markdown("**隐写图（记录）**")
-                    st.image(base64.b64decode(stego_b64), width="stretch")
-
-            bit_data = item.get("bit_planes_data") or {}
-            cover_planes = bit_data.get("cover") or []
-            stego_planes = bit_data.get("stego") or []
-            if cover_planes:
-                st.markdown("**位平面（载体图）**")
-                cols = st.columns(8)
-                for idx, plane in enumerate(cover_planes[:8]):
-                    with cols[idx]:
-                        img_bytes = _data_url_to_bytes(str(plane.get("url") or ""))
-                        if img_bytes:
-                            st.image(img_bytes, caption=str(plane.get("label") or ""), width="stretch")
-            if stego_planes:
-                st.markdown("**位平面（隐写图）**")
-                cols = st.columns(8)
-                for idx, plane in enumerate(stego_planes[:8]):
-                    with cols[idx]:
-                        img_bytes = _data_url_to_bytes(str(plane.get("url") or ""))
-                        if img_bytes:
-                            st.image(img_bytes, caption=str(plane.get("label") or ""), width="stretch")
-
-            hist = item.get("histogram_data") or {}
-            if hist:
-                st.markdown("**直方图（记录）**")
-                st.plotly_chart(hist, use_container_width=True)
-
-            st.markdown("**文本提取校验（记录）**")
-            txt_cols = st.columns(2)
-            with txt_cols[0]:
-                st.text_area(
-                    "原始文本（记录）",
-                    value=str(item.get("source_text") or ""),
-                    height=120,
-                    disabled=True,
-                    key=f"record_source_{rid}",
+        with row_cols[1]:
+            with st.expander(expander_title, expanded=False):
+                st.write(f"隐写执行时间：{_format_dt(item.get('started_at'))}")
+                st.write(f"完成时间：{_format_dt(item.get('completed_at'))}")
+                psnr_val = item.get("psnr")
+                st.write(f"PSNR：{psnr_val if psnr_val is not None else '-'}")
+                ds = item.get("duration_seconds")
+                st.write(
+                    f"实验耗时(秒)：{f'{float(ds):.3f}' if ds is not None else '-'}"
                 )
-            with txt_cols[1]:
-                st.text_area(
-                    "提取文本（记录）",
-                    value=str(item.get("extracted_text") or ""),
-                    height=120,
-                    disabled=True,
-                    key=f"record_extracted_{rid}",
-                )
+                metrics_cols = st.columns(2)
+                with metrics_cols[0]:
+                    cp = item.get("cpu_peak_percent")
+                    ca = item.get("cpu_avg_percent")
+                    st.caption(
+                        f"CPU 峰值/均值(%)："
+                        f"{f'{float(cp):.2f}' if cp is not None else '-'} / "
+                        f"{f'{float(ca):.2f}' if ca is not None else '-'}"
+                    )
+                with metrics_cols[1]:
+                    mem_peak = _format_bytes(item.get("memory_peak_bytes"))
+                    mem_avg = _format_bytes(item.get("memory_avg_bytes"))
+                    st.caption(f"内存峰值/均值：{mem_peak} / {mem_avg}")
 
-            if rid is not None and st.button("删除该记录", key=f"delete_record_{rid}", width="stretch"):
-                delete_result = auth.api_request(
-                    "DELETE",
-                    f"/labs/records/{rid}",
-                    with_auth=True,
-                    timeout=30,
-                )
-                if delete_result["ok"]:
-                    st.success("记录已删除。")
-                    st.rerun()
+                detail_item = item
+                if rid is not None:
+                    if st.button("加载本条详情", key=f"load_record_detail_{rid}", width="stretch"):
+                        st.session_state[f"record_detail_open_{rid}"] = True
+                    if st.session_state.get(f"record_detail_open_{rid}"):
+                        loaded_detail = _fetch_record_detail(int(rid))
+                        if loaded_detail:
+                            detail_item = loaded_detail
+
+                detail_loaded = bool(detail_item.get("cover_image_b64") or detail_item.get("source_text"))
+                if not detail_loaded:
+                    st.info("请先点击“加载本条详情”后查看图片、位平面、直方图与文本提取校验。")
+
+                cover_b64 = str(detail_item.get("cover_image_b64") or "")
+                stego_b64 = str(detail_item.get("stego_image_b64") or "")
+                if cover_b64 and stego_b64:
+                    img_cols = st.columns(2)
+                    with img_cols[0]:
+                        st.markdown("**载体图（记录）**")
+                        st.image(base64.b64decode(cover_b64), width="stretch")
+                    with img_cols[1]:
+                        st.markdown("**隐写图（记录）**")
+                        st.image(base64.b64decode(stego_b64), width="stretch")
+
+                bit_data = detail_item.get("bit_planes_data") or {}
+                cover_planes = bit_data.get("cover") or []
+                stego_planes = bit_data.get("stego") or []
+                if cover_planes:
+                    st.markdown("**位平面（载体图）**")
+                    cols = st.columns(8)
+                    for idx, plane in enumerate(cover_planes[:8]):
+                        with cols[idx]:
+                            img_bytes = _data_url_to_bytes(str(plane.get("url") or ""))
+                            if img_bytes:
+                                st.image(img_bytes, caption=str(plane.get("label") or ""), width="stretch")
+                if stego_planes:
+                    st.markdown("**位平面（隐写图）**")
+                    cols = st.columns(8)
+                    for idx, plane in enumerate(stego_planes[:8]):
+                        with cols[idx]:
+                            img_bytes = _data_url_to_bytes(str(plane.get("url") or ""))
+                            if img_bytes:
+                                st.image(img_bytes, caption=str(plane.get("label") or ""), width="stretch")
+
+                hist = detail_item.get("histogram_data") or {}
+                if hist:
+                    st.markdown("**直方图（记录）**")
+                    chart_key = f"record_hist_{rid}" if rid is not None else f"record_hist_idx_{row_idx}"
+                    st.plotly_chart(hist, use_container_width=True, key=chart_key)
+
+                st.markdown("**文本提取校验（记录）**")
+                if detail_loaded:
+                    txt_cols = st.columns(2)
+                    with txt_cols[0]:
+                        st.text_area(
+                            "原始文本（记录）",
+                            value=str(detail_item.get("source_text") or ""),
+                            height=120,
+                            disabled=True,
+                            key=f"record_source_{rid}",
+                        )
+                    with txt_cols[1]:
+                        st.text_area(
+                            "提取文本（记录）",
+                            value=str(detail_item.get("extracted_text") or ""),
+                            height=120,
+                            disabled=True,
+                            key=f"record_extracted_{rid}",
+                        )
                 else:
-                    st.error(f"删除失败：{delete_result['error']}")
+                    st.caption("未加载详情，文本提取校验内容暂不可用。")
+
+                if rid is not None and st.button("删除该记录", key=f"delete_record_{rid}", width="stretch"):
+                    delete_result = auth.api_request(
+                        "DELETE",
+                        f"/labs/records/{rid}",
+                        with_auth=True,
+                        timeout=30,
+                    )
+                    if delete_result["ok"]:
+                        st.session_state.pop(f"record_select_{rid}", None)
+                        st.session_state.pop(f"record_detail_open_{rid}", None)
+                        st.session_state.pop(f"record_detail_cache_{rid}", None)
+                        st.success("记录已删除。")
+                        st.rerun()
+                    else:
+                        st.error(f"删除失败：{delete_result['error']}")
 
 
-def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_topic: str) -> None:
+def _render_lsb_experiment_panel(
+    running_run: dict[str, Any] | None,
+    selected_topic: str,
+    status_data: dict[str, Any] | None,
+    running_metrics: dict[str, Any] | None,
+) -> None:
     """渲染空域 LSB 隐写实验交互区。"""
     if selected_topic != "空域 LSB 隐写":
         return
@@ -898,11 +1383,18 @@ def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_to
 
     cover_image: Image.Image | None = None
     if uploaded_file is not None:
-        cover_image = Image.open(uploaded_file).convert("RGB")
-        _, cap_bytes = estimate_capacity(cover_image)
-        st.caption(f"当前图像可用隐写容量约：{cap_bytes} 字节（UTF-8）")
+        file_size = int(getattr(uploaded_file, "size", 0) or 0)
+        if file_size > MAX_UPLOAD_IMAGE_BYTES:
+            st.error(
+                f"上传失败：图像大小 {file_size / 1024 / 1024:.2f} MB，超过 {MAX_UPLOAD_IMAGE_MB} MB 限制。"
+            )
+        else:
+            cover_image = Image.open(uploaded_file).convert("RGB")
+            _, cap_bytes = estimate_capacity(cover_image)
+            st.caption(f"当前图像可用隐写容量约：{cap_bytes} 字节（UTF-8）")
 
     if st.button("执行 LSB 隐写", type="primary", width="stretch"):
+        _touch_lab_experiment_activity()
         if cover_image is None:
             st.error("请先上传载体图。")
         elif not message_text.strip():
@@ -913,6 +1405,16 @@ def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_to
             except Exception as exc:
                 st.error(f"隐写失败：{exc}")
             else:
+                st.session_state.lsb_embed_started_at = _now_shanghai_iso()
+                st.session_state.lsb_auto_save_pending = True
+                run_id = running_run.get("id")
+                if run_id is not None:
+                    st.session_state.lab_resource_tracker = {
+                        "run_id": run_id,
+                        "experiment_name": selected_topic,
+                        "started_at": st.session_state.lsb_embed_started_at,
+                        "samples": [],
+                    }
                 st.session_state.lsb_cover_image = cover_image
                 st.session_state.lsb_stego_image = stego_image
                 st.session_state.lsb_source_text = message_text
@@ -994,6 +1496,37 @@ def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_to
                 f"提取结果与原始文本不一致，首个差异位置：{mismatch_idx}。"
             )
 
+    # 保存前再采一次：main 开头的 collect 早于「执行隐写」重置 tracker，否则 samples 常为空
+    if status_data is not None:
+        _collect_experiment_resource_sample(status_data, running_run, selected_topic)
+    tracker_summary = _build_experiment_resource_summary(running_run, selected_topic)
+    resource_summary = _merge_resource_summary_with_fallback(
+        tracker_summary,
+        running_metrics,
+        st.session_state.get("lsb_embed_started_at"),
+    )
+    if resource_summary:
+        st.markdown("**实验过程资源统计（当前会话）**")
+        summary_cols = st.columns(3)
+        with summary_cols[0]:
+            st.metric(
+                "CPU 峰值 / 均值",
+                f"{resource_summary.get('cpu_peak_percent', 0.0):.2f}%",
+                f"均值 {resource_summary.get('cpu_avg_percent', 0.0):.2f}%",
+            )
+        with summary_cols[1]:
+            st.metric(
+                "内存峰值 / 均值",
+                _format_bytes(resource_summary.get("memory_peak_bytes")),
+                f"均值 {_format_bytes(resource_summary.get('memory_avg_bytes'))}",
+            )
+        with summary_cols[2]:
+            st.metric(
+                "实验耗时",
+                f"{resource_summary.get('duration_seconds', 0.0):.1f}s",
+                f"样本 {resource_summary.get('sample_count', 0)} 条",
+            )
+
     _auto_save_experiment_record(
         experiment_name=selected_topic,
         running_run=running_run,
@@ -1007,6 +1540,7 @@ def _render_lsb_experiment_panel(running_run: dict[str, Any] | None, selected_to
         },
         source_text=source_text,
         extracted_text=extracted,
+        resource_summary=resource_summary,
     )
 
 
@@ -1038,8 +1572,21 @@ def main() -> None:
     st.write(f"当前选择：**{selected_topic}**（实验内容后续补充）")
 
     status_data = _load_status()
-    running_run = (status_data or {}).get("running")
-    _render_running_status(running_run)
+    if status_data is None:
+        running_run = None
+        running_metrics = None
+    else:
+        running_run = status_data.get("running")
+        running_metrics = status_data.get("running_metrics")
+        if not running_run:
+            st.session_state.pop("lab_idle_shutdown_deadline", None)
+            st.session_state.pop("lab_resource_tracker", None)
+            st.session_state.pop("lsb_embed_started_at", None)
+        _maybe_auto_stop_idle_sandbox(running_run)
+
+    if status_data is not None:
+        _collect_experiment_resource_sample(status_data, running_run, selected_topic)
+    _render_running_status(running_run, running_metrics)
 
     col_start, col_stop = st.columns(2)
     with col_start:
@@ -1051,9 +1598,21 @@ def main() -> None:
             _stop_sandbox()
             st.rerun()
 
-    _render_lsb_experiment_panel(running_run, selected_topic)
+    _render_lsb_experiment_panel(running_run, selected_topic, status_data, running_metrics)
     _render_experiment_records_panel(current_user)
     _render_admin_panel(current_user)
+
+    # 合并自动刷新：管理员监控 + 实验后空闲关箱倒计时（避免多处 st.autorefresh 冲突）
+    refresh_ms: int | None = None
+    if st.session_state.get("lab_idle_shutdown_deadline") and running_run:
+        remaining = st.session_state.lab_idle_shutdown_deadline - time.monotonic()
+        if remaining > 0:
+            refresh_ms = min(max(int(remaining * 500), 2000), 30000)
+    if current_user.get("is_superuser") and st.session_state.get("admin_metrics_auto_refresh", True):
+        admin_ms = int(st.session_state.get("admin_metrics_refresh_seconds", 5) * 1000)
+        refresh_ms = min(refresh_ms, admin_ms) if refresh_ms is not None else admin_ms
+    if refresh_ms is not None and hasattr(st, "autorefresh"):
+        st.autorefresh(interval=refresh_ms, key="lab_combined_autorefresh")
 
 
 if __name__ == "__main__":

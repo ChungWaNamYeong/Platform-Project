@@ -2,9 +2,11 @@ from django.urls import path
 
 from .views import (
     ExperimentRecordDetailView,
+    ExperimentRecordBulkDeleteView,
     ExperimentRecordExportView,
     ExperimentRecordListCreateView,
     SandboxAdminRunsView,
+    SandboxAdminMetricsView,
     SandboxStartView,
     SandboxStatusView,
     SandboxStopView,
@@ -42,6 +44,11 @@ urlpatterns = [
     path("labs/sandbox/status", SandboxStatusView.as_view(), name="sandbox-status"),
     path("labs/records", ExperimentRecordListCreateView.as_view(), name="experiment-records"),
     path(
+        "labs/records/bulk-delete",
+        ExperimentRecordBulkDeleteView.as_view(),
+        name="experiment-record-bulk-delete",
+    ),
+    path(
         "labs/records/<int:pk>",
         ExperimentRecordDetailView.as_view(),
         name="experiment-record-detail",
@@ -55,5 +62,10 @@ urlpatterns = [
         "labs/sandbox/admin/runs",
         SandboxAdminRunsView.as_view(),
         name="sandbox-admin-runs",
+    ),
+    path(
+        "labs/sandbox/admin/metrics",
+        SandboxAdminMetricsView.as_view(),
+        name="sandbox-admin-metrics",
     ),
 ]

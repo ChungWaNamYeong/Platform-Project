@@ -134,6 +134,11 @@ class ExperimentRecord(models.Model):
     bit_planes_data = models.JSONField("位平面数据", default=dict, blank=True)
     source_text = models.TextField("原始文本", blank=True, default="")
     extracted_text = models.TextField("提取文本", blank=True, default="")
+    cpu_peak_percent = models.FloatField("CPU峰值占用(%)", blank=True, null=True)
+    cpu_avg_percent = models.FloatField("CPU平均占用(%)", blank=True, null=True)
+    memory_peak_bytes = models.BigIntegerField("内存峰值(bytes)", blank=True, null=True)
+    memory_avg_bytes = models.BigIntegerField("内存平均(bytes)", blank=True, null=True)
+    duration_seconds = models.FloatField("实验耗时(秒)", blank=True, null=True)
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
     updated_at = models.DateTimeField("更新时间", auto_now=True)
 

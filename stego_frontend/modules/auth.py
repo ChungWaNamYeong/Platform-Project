@@ -143,7 +143,7 @@ def api_request(
         for base_url in _candidate_base_urls():
             url = f"{base_url}{path}"
             try:
-                request_timeout = max(3, min(timeout, 8))
+                request_timeout = max(3, min(timeout, 30))
                 resp = requests.request(
                     method=method.upper(),
                     url=url,

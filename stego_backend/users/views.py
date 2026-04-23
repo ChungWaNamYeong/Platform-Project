@@ -5,8 +5,9 @@ import csv
 from django.contrib.auth import authenticate, get_user_model
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
+from django.utils.dateparse import parse_datetime
 from django.utils import timezone
-from docker.errors import DockerException
+from docker.errors import DockerException, NotFound
 from rest_framework import generics, status
 from rest_framework.authtoken.models import Token
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -21,6 +22,7 @@ from .serializers import (
     AdminUserSerializer,
     ChatMessageSerializer,
     ChatSessionSerializer,
+    ExperimentRecordListSerializer,
     ExperimentRecordSerializer,
     RegisterSerializer,
     SandboxRunSerializer,
@@ -28,6 +30,17 @@ from .serializers import (
 )
 
 Student = get_user_model()
+
+
+def _filter_experiment_records_for_request(request, queryset):
+    """按请求参数过滤实验记录；用户名过滤仅允许管理员使用。"""
+    experiment_name = str(request.query_params.get("experiment_name") or "").strip()
+    username = str(request.query_params.get("username") or "").strip()
+    if experiment_name:
+        queryset = queryset.filter(experiment_name=experiment_name)
+    if username and request.user.is_superuser:
+        queryset = queryset.filter(user__username=username)
+    return queryset
 
 
 class RegisterView(APIView):
@@ -300,10 +313,27 @@ class SandboxStatusView(APIView):
             .first()
         )
         latest_runs = SandboxRun.objects.filter(user=request.user).order_by("-created_at")[:10]
+        running_metrics = None
+        if running_run and running_run.container_id:
+            try:
+                running_metrics = StegoSandbox(ensure_image=False).get_container_metrics(
+                    running_run.container_id
+                )
+            except NotFound:
+                running_metrics = {
+                    "container_id": running_run.container_id,
+                    "error": "container_not_found",
+                }
+            except Exception as exc:
+                running_metrics = {
+                    "container_id": running_run.container_id,
+                    "error": str(exc),
+                }
         return Response(
             {
                 "running": SandboxRunSerializer(running_run).data if running_run else None,
                 "history": SandboxRunSerializer(latest_runs, many=True).data,
+                "running_metrics": running_metrics,
             }
         )
 
@@ -316,17 +346,87 @@ class SandboxAdminRunsView(generics.ListAPIView):
     queryset = SandboxRun.objects.select_related("user").all().order_by("-created_at")
 
 
+class SandboxAdminMetricsView(APIView):
+    """超级管理员实时查看运行中沙箱资源占用。"""
+
+    permission_classes = [IsAuthenticated, IsSuperUser]
+
+    def get(self, request):
+        running_runs = SandboxRun.objects.select_related("user").filter(
+            status=SandboxRun.STATUS_RUNNING
+        )
+        sandbox = StegoSandbox(ensure_image=False)
+        payload = []
+        for run in running_runs:
+            if not run.container_id:
+                payload.append(
+                    {
+                        "run_id": run.id,
+                        "username": run.user.username,
+                        "experiment_topic": run.experiment_topic,
+                        "container_id": "",
+                        "status": run.status,
+                        "metrics": None,
+                        "error": "missing_container_id",
+                    }
+                )
+                continue
+            try:
+                metrics = sandbox.get_container_metrics(run.container_id)
+                payload.append(
+                    {
+                        "run_id": run.id,
+                        "username": run.user.username,
+                        "experiment_topic": run.experiment_topic,
+                        "container_id": run.container_id,
+                        "status": run.status,
+                        "metrics": metrics,
+                        "error": "",
+                    }
+                )
+            except NotFound:
+                payload.append(
+                    {
+                        "run_id": run.id,
+                        "username": run.user.username,
+                        "experiment_topic": run.experiment_topic,
+                        "container_id": run.container_id,
+                        "status": run.status,
+                        "metrics": None,
+                        "error": "container_not_found",
+                    }
+                )
+            except Exception as exc:
+                payload.append(
+                    {
+                        "run_id": run.id,
+                        "username": run.user.username,
+                        "experiment_topic": run.experiment_topic,
+                        "container_id": run.container_id,
+                        "status": run.status,
+                        "metrics": None,
+                        "error": str(exc),
+                    }
+                )
+        return Response({"items": payload, "count": len(payload)})
+
+
 class ExperimentRecordListCreateView(generics.ListCreateAPIView):
     """实验记录列表与创建接口。"""
 
     permission_classes = [IsAuthenticated]
     serializer_class = ExperimentRecordSerializer
 
+    def get_serializer_class(self):
+        if self.request.method == "GET":
+            return ExperimentRecordListSerializer
+        return ExperimentRecordSerializer
+
     def get_queryset(self):
         queryset = ExperimentRecord.objects.select_related("user").order_by("-created_at")
-        if self.request.user.is_superuser:
-            return queryset
-        return queryset.filter(user=self.request.user)
+        if not self.request.user.is_superuser:
+            queryset = queryset.filter(user=self.request.user)
+        return _filter_experiment_records_for_request(self.request, queryset)
 
     def create(self, request, *args, **kwargs):
         data = request.data.copy()
@@ -347,6 +447,13 @@ class ExperimentRecordListCreateView(generics.ListCreateAPIView):
                 data["started_at"] = timezone.now().isoformat()
         if not data.get("completed_at"):
             data["completed_at"] = timezone.now().isoformat()
+        if data.get("duration_seconds") in (None, "", "null"):
+            started_dt = parse_datetime(str(data.get("started_at") or ""))
+            completed_dt = parse_datetime(str(data.get("completed_at") or ""))
+            if started_dt and completed_dt:
+                # 兜底根据起止时间计算耗时，避免前端异常导致缺失。
+                duration_seconds = (completed_dt - started_dt).total_seconds()
+                data["duration_seconds"] = round(max(duration_seconds, 0.0), 3)
 
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
@@ -379,6 +486,7 @@ class ExperimentRecordExportView(APIView):
         queryset = ExperimentRecord.objects.select_related("user").order_by("-created_at")
         if not request.user.is_superuser:
             queryset = queryset.filter(user=request.user)
+        queryset = _filter_experiment_records_for_request(request, queryset)
 
         if export_format == "csv":
             return self._export_csv(queryset)
@@ -401,6 +509,11 @@ class ExperimentRecordExportView(APIView):
                 "psnr",
                 "source_text",
                 "extracted_text",
+                "cpu_peak_percent",
+                "cpu_avg_percent",
+                "memory_peak_bytes",
+                "memory_avg_bytes",
+                "duration_seconds",
                 "cover_image_b64_length",
                 "stego_image_b64_length",
                 "created_at",
@@ -417,9 +530,59 @@ class ExperimentRecordExportView(APIView):
                     item.psnr if item.psnr is not None else "",
                     item.source_text,
                     item.extracted_text,
+                    item.cpu_peak_percent if item.cpu_peak_percent is not None else "",
+                    item.cpu_avg_percent if item.cpu_avg_percent is not None else "",
+                    item.memory_peak_bytes if item.memory_peak_bytes is not None else "",
+                    item.memory_avg_bytes if item.memory_avg_bytes is not None else "",
+                    item.duration_seconds if item.duration_seconds is not None else "",
                     len(item.cover_image_b64 or ""),
                     len(item.stego_image_b64 or ""),
                     item.created_at.isoformat() if item.created_at else "",
                 ]
             )
         return response
+
+
+class ExperimentRecordBulkDeleteView(APIView):
+    """批量删除实验记录。"""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        raw_ids = request.data.get("record_ids") or []
+        if not isinstance(raw_ids, list):
+            return Response(
+                {"detail": "record_ids 必须是数组。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        normalized_ids = []
+        for item in raw_ids:
+            try:
+                normalized_ids.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        normalized_ids = sorted(set(x for x in normalized_ids if x > 0))
+        if not normalized_ids:
+            return Response(
+                {"detail": "未提供有效记录 ID。", "deleted_count": 0, "ignored_count": 0},
+                status=status.HTTP_200_OK,
+            )
+
+        base_queryset = ExperimentRecord.objects.filter(id__in=normalized_ids)
+        if not request.user.is_superuser:
+            base_queryset = base_queryset.filter(user=request.user)
+
+        deletable_ids = list(base_queryset.values_list("id", flat=True))
+        if deletable_ids:
+            ExperimentRecord.objects.filter(id__in=deletable_ids).delete()
+        ignored_count = len(normalized_ids) - len(deletable_ids)
+        return Response(
+            {
+                "detail": "批量删除完成。",
+                "deleted_count": len(deletable_ids),
+                "ignored_count": max(ignored_count, 0),
+                "deleted_ids": deletable_ids,
+            },
+            status=status.HTTP_200_OK,
+        )

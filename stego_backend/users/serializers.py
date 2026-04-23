@@ -172,6 +172,43 @@ class ExperimentRecordSerializer(serializers.ModelSerializer):
             "bit_planes_data",
             "source_text",
             "extracted_text",
+            "cpu_peak_percent",
+            "cpu_avg_percent",
+            "memory_peak_bytes",
+            "memory_avg_bytes",
+            "duration_seconds",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "user",
+            "username",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class ExperimentRecordListSerializer(serializers.ModelSerializer):
+    """实验记录列表专用序列化器，避免大字段拖慢列表接口。"""
+
+    username = serializers.CharField(source="user.username", read_only=True)
+
+    class Meta:
+        model = ExperimentRecord
+        fields = [
+            "id",
+            "user",
+            "username",
+            "experiment_name",
+            "started_at",
+            "completed_at",
+            "psnr",
+            "cpu_peak_percent",
+            "cpu_avg_percent",
+            "memory_peak_bytes",
+            "memory_avg_bytes",
+            "duration_seconds",
             "created_at",
             "updated_at",
         ]
