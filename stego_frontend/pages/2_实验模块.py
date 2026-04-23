@@ -2090,7 +2090,7 @@ def main() -> None:
     )
     if running_topic:
         selected_topic = running_topic
-    st.write(f"当前选择：**{selected_topic}**（实验内容后续补充）")
+    st.write(f"当前选择：**{selected_topic}**（若需更改请重启沙箱）")
 
     if status_data is not None:
         _collect_experiment_resource_sample(status_data, running_run, selected_topic)
