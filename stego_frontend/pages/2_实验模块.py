@@ -55,6 +55,34 @@ TOPIC_STATE_PREFIX = {
     "空域 LSB 隐写": "lsb",
     "频域 DCT 隐写": "dct",
 }
+WORKSPACE_STATE_KEYS: dict[str, tuple[str, ...]] = {
+    "lsb": (
+        "lsb_cover_image",
+        "lsb_stego_image",
+        "lsb_source_text",
+        "lsb_workspace_locked",
+    ),
+    "dct": (
+        "dct_cover_image",
+        "dct_stego_image",
+        "dct_source_text",
+        "dct_workspace_locked",
+        "dct_attacked_image",
+        "dct_attacked_extracted_text",
+        "dct_attack_config",
+        "dct_attack_error",
+    ),
+}
+WORKSPACE_WIDGET_KEYS: dict[str, tuple[str, ...]] = {
+    "lsb": (
+        "lsb_cover_uploader",
+        "lsb_message_text",
+    ),
+    "dct": (
+        "dct_cover_uploader",
+        "dct_message_text",
+    ),
+}
 
 
 def _state_prefix_by_topic(topic: str) -> str:
@@ -85,11 +113,27 @@ def _clear_experiment_runtime_state() -> None:
     for prefix in TOPIC_STATE_PREFIX.values():
         st.session_state.pop(f"{prefix}_embed_started_at", None)
         st.session_state.pop(f"{prefix}_auto_save_pending", None)
-    # DCT 鲁棒性测试状态
-    st.session_state.pop("dct_attacked_image", None)
-    st.session_state.pop("dct_attacked_extracted_text", None)
-    st.session_state.pop("dct_attack_config", None)
-    st.session_state.pop("dct_attack_error", None)
+
+
+def _clear_experiment_workspace(prefix: str) -> None:
+    """按实验前缀清理实验台内容与输入控件状态。"""
+    for key in WORKSPACE_STATE_KEYS.get(prefix, ()):
+        st.session_state.pop(key, None)
+    for key in WORKSPACE_WIDGET_KEYS.get(prefix, ()):
+        st.session_state.pop(key, None)
+
+
+def _clear_all_experiment_workspaces() -> None:
+    """清理所有实验台内容。"""
+    for prefix in TOPIC_STATE_PREFIX.values():
+        _clear_experiment_workspace(prefix)
+
+
+def _clear_sandbox_bound_state() -> None:
+    """沙箱生命周期结束时清理运行态与实验台内容。"""
+    _clear_experiment_runtime_state()
+    _clear_all_experiment_workspaces()
+    st.session_state.pop("lab_locked_topic", None)
 
 
 def _maybe_auto_stop_idle_sandbox(running_run: dict[str, Any] | None) -> None:
@@ -100,7 +144,7 @@ def _maybe_auto_stop_idle_sandbox(running_run: dict[str, Any] | None) -> None:
     if time.monotonic() < deadline:
         return
     result = auth.api_request("POST", "/labs/sandbox/stop", with_auth=True, timeout=60)
-    _clear_experiment_runtime_state()
+    _clear_sandbox_bound_state()
     if result["ok"]:
         _set_feedback(
             "warning",
@@ -214,7 +258,7 @@ def _stop_sandbox() -> None:
         _set_feedback("warning", detail)
     else:
         _set_feedback("success", detail)
-    _clear_experiment_runtime_state()
+    _clear_sandbox_bound_state()
 
 
 def _admin_force_stop(run_id: int) -> None:
@@ -1161,24 +1205,18 @@ def _render_experiment_records_panel(current_user: dict[str, Any]) -> None:
     st.divider()
     st.subheader("实验记录")
 
-    filter_cols = st.columns(3 if current_user.get("is_superuser") else 2)
-    with filter_cols[0]:
-        experiment_filter = st.selectbox(
-            "实验类型筛选",
-            options=["全部", *EXPERIMENT_TOPICS],
-            key="record_filter_experiment_name",
-        )
-    username_filter = ""
-    if current_user.get("is_superuser"):
-        with filter_cols[1]:
-            username_filter = st.text_input(
-                "按用户名筛选（管理员）",
-                value=st.session_state.get("record_filter_username", ""),
-                key="record_filter_username",
-            ).strip()
-    with filter_cols[-1]:
-        if st.button("刷新记录", key="record_filter_refresh", width="stretch"):
-            st.rerun()
+    if "record_filter_experiment_name" not in st.session_state:
+        st.session_state.record_filter_experiment_name = "全部"
+    if "record_page" not in st.session_state:
+        st.session_state.record_page = 1
+    if current_user.get("is_superuser") and "record_filter_username" not in st.session_state:
+        st.session_state.record_filter_username = ""
+
+    experiment_filter = str(st.session_state.get("record_filter_experiment_name") or "全部")
+    if experiment_filter not in ["全部", *EXPERIMENT_TOPICS]:
+        experiment_filter = "全部"
+        st.session_state.record_filter_experiment_name = experiment_filter
+    username_filter = str(st.session_state.get("record_filter_username") or "").strip()
 
     query_params: dict[str, str] = {}
     if experiment_filter != "全部":
@@ -1193,27 +1231,64 @@ def _render_experiment_records_panel(current_user: dict[str, Any]) -> None:
         st.error(f"读取实验记录失败：{result['error']}")
         return
     records = result["data"] or []
-    if not records:
-        st.caption("暂无实验记录。完成一次实验后将自动出现在这里。")
-        return
 
     total = len(records)
     total_pages = max((total + RECORD_PAGE_SIZE - 1) // RECORD_PAGE_SIZE, 1)
     previous_page = int(st.session_state.get("record_page", 1) or 1)
     previous_page = min(max(previous_page, 1), total_pages)
-    page_cols = st.columns([2, 1, 2])
-    with page_cols[0]:
-        st.caption(f"筛选后共 {total} 条记录")
-    with page_cols[1]:
-        selected_page = st.selectbox(
-            "页码",
-            options=list(range(1, total_pages + 1)),
-            index=previous_page - 1,
-            key="record_page_select",
-        )
-        st.session_state.record_page = selected_page
-    with page_cols[2]:
-        st.caption(f"每页 {RECORD_PAGE_SIZE} 条")
+    if current_user.get("is_superuser"):
+        control_cols = st.columns([2.2, 2.0, 1.2, 1.3, 1.0])
+        with control_cols[0]:
+            experiment_filter = st.selectbox(
+                "实验类型筛选",
+                options=["全部", *EXPERIMENT_TOPICS],
+                key="record_filter_experiment_name",
+            )
+        with control_cols[1]:
+            username_filter = st.text_input(
+                "按用户名筛选（管理员）",
+                value=st.session_state.get("record_filter_username", ""),
+                key="record_filter_username",
+            ).strip()
+        with control_cols[2]:
+            selected_page = st.selectbox(
+                "页码",
+                options=list(range(1, total_pages + 1)),
+                index=previous_page - 1,
+                key="record_page_select",
+            )
+        with control_cols[3]:
+            st.caption(f"筛选后共 {total} 条")
+            st.caption(f"每页 {RECORD_PAGE_SIZE} 条")
+        with control_cols[4]:
+            if st.button("刷新记录", key="record_filter_refresh", width="stretch"):
+                st.rerun()
+    else:
+        control_cols = st.columns([3.1, 1.2, 1.6, 1.0])
+        with control_cols[0]:
+            experiment_filter = st.selectbox(
+                "实验类型筛选",
+                options=["全部", *EXPERIMENT_TOPICS],
+                key="record_filter_experiment_name",
+            )
+        with control_cols[1]:
+            selected_page = st.selectbox(
+                "页码",
+                options=list(range(1, total_pages + 1)),
+                index=previous_page - 1,
+                key="record_page_select",
+            )
+        with control_cols[2]:
+            st.caption(f"筛选后共 {total} 条")
+            st.caption(f"每页 {RECORD_PAGE_SIZE} 条")
+        with control_cols[3]:
+            if st.button("刷新记录", key="record_filter_refresh", width="stretch"):
+                st.rerun()
+    st.session_state.record_page = selected_page
+
+    if not records:
+        st.caption("暂无实验记录。完成一次实验后将自动出现在这里。")
+        return
 
     page_start = (selected_page - 1) * RECORD_PAGE_SIZE
     page_end = page_start + RECORD_PAGE_SIZE
@@ -1414,12 +1489,23 @@ def _render_lsb_experiment_panel(
         st.info("请先点击“启动实验环境”，再进行 LSB 隐写实验。")
         return
 
+    if st.session_state.get("lsb_stego_image"):
+        st.session_state.lsb_workspace_locked = True
+    workspace_locked = bool(st.session_state.get("lsb_workspace_locked"))
     uploaded_file = st.file_uploader(
         "上传载体图（PNG/JPG）",
         type=["png", "jpg", "jpeg"],
         accept_multiple_files=False,
+        key="lsb_cover_uploader",
+        disabled=workspace_locked,
     )
-    message_text = st.text_area("输入要嵌入的文本", height=120, placeholder="请输入需要隐藏的文本内容...")
+    message_text = st.text_area(
+        "输入要嵌入的文本",
+        height=120,
+        placeholder="请输入需要隐藏的文本内容...",
+        key="lsb_message_text",
+        disabled=workspace_locked,
+    )
 
     cover_image: Image.Image | None = None
     if uploaded_file is not None:
@@ -1433,7 +1519,29 @@ def _render_lsb_experiment_panel(
             _, cap_bytes = estimate_capacity(cover_image)
             st.caption(f"当前图像可用隐写容量约：{cap_bytes} 字节（UTF-8）")
 
-    if st.button("执行 LSB 隐写", type="primary", width="stretch"):
+    action_cols = st.columns(2)
+    with action_cols[0]:
+        run_lsb = st.button(
+            "执行 LSB 隐写",
+            type="primary",
+            width="stretch",
+            disabled=workspace_locked,
+            key="run_lsb_embed",
+        )
+    with action_cols[1]:
+        clear_lsb = st.button(
+            "清空实验台",
+            width="stretch",
+            disabled=not workspace_locked,
+            key="clear_lsb_workspace",
+        )
+    if clear_lsb:
+        _touch_lab_experiment_activity()
+        _clear_experiment_workspace("lsb")
+        st.success("已清空 LSB 实验台，可重新上传图片与文本。")
+        st.rerun()
+
+    if run_lsb:
         _touch_lab_experiment_activity()
         if cover_image is None:
             st.error("请先上传载体图。")
@@ -1458,7 +1566,9 @@ def _render_lsb_experiment_panel(
                 st.session_state.lsb_cover_image = cover_image
                 st.session_state.lsb_stego_image = stego_image
                 st.session_state.lsb_source_text = message_text
-                st.success("隐写完成，已生成隐写图。")
+                st.session_state.lsb_workspace_locked = True
+                _set_feedback("success", "隐写完成，实验台已锁定。请先清空实验台再开始新一轮实验。")
+                st.rerun()
 
     cover_saved = st.session_state.get("lsb_cover_image")
     stego_saved = st.session_state.get("lsb_stego_image")
@@ -1601,17 +1711,22 @@ def _render_dct_experiment_panel(
         st.info("请先点击“启动实验环境”，再进行 DCT 隐写实验。")
         return
 
+    if st.session_state.get("dct_stego_image"):
+        st.session_state.dct_workspace_locked = True
+    workspace_locked = bool(st.session_state.get("dct_workspace_locked"))
     uploaded_file = st.file_uploader(
         "上传载体图（PNG/JPG）",
         type=["png", "jpg", "jpeg"],
         accept_multiple_files=False,
         key="dct_cover_uploader",
+        disabled=workspace_locked,
     )
     message_text = st.text_area(
         "输入要嵌入的文本",
         height=120,
         placeholder="请输入需要隐藏的文本内容...",
         key="dct_message_text",
+        disabled=workspace_locked,
     )
 
     cover_image: Image.Image | None = None
@@ -1626,7 +1741,29 @@ def _render_dct_experiment_panel(
             _, cap_bytes = estimate_dct_capacity(cover_image)
             st.caption(f"当前图像可用隐写容量约：{cap_bytes} 字节（UTF-8）")
 
-    if st.button("执行 DCT 隐写", type="primary", width="stretch"):
+    action_cols = st.columns(2)
+    with action_cols[0]:
+        run_dct = st.button(
+            "执行 DCT 隐写",
+            type="primary",
+            width="stretch",
+            disabled=workspace_locked,
+            key="run_dct_embed",
+        )
+    with action_cols[1]:
+        clear_dct = st.button(
+            "清空实验台",
+            width="stretch",
+            disabled=not workspace_locked,
+            key="clear_dct_workspace",
+        )
+    if clear_dct:
+        _touch_lab_experiment_activity()
+        _clear_experiment_workspace("dct")
+        st.success("已清空 DCT 实验台，可重新上传图片与文本。")
+        st.rerun()
+
+    if run_dct:
         _touch_lab_experiment_activity()
         if cover_image is None:
             st.error("请先上传载体图。")
@@ -1655,7 +1792,9 @@ def _render_dct_experiment_panel(
                 st.session_state.dct_cover_image = cover_image
                 st.session_state.dct_stego_image = stego_image
                 st.session_state.dct_source_text = message_text
-                st.success("隐写完成，已生成隐写图。")
+                st.session_state.dct_workspace_locked = True
+                _set_feedback("success", "隐写完成，实验台已锁定。请先清空实验台再开始新一轮实验。")
+                st.rerun()
 
     cover_saved = st.session_state.get("dct_cover_image")
     stego_saved = st.session_state.get("dct_stego_image")
@@ -1920,9 +2059,6 @@ def main() -> None:
         "实验沙箱镜像基于 `python:3.12-slim`，并预装 `opencv-python`、`scipy`、`stegano`、`numpy`。"
     )
 
-    selected_topic = st.selectbox("请选择实验课题", options=EXPERIMENT_TOPICS, index=0)
-    st.write(f"当前选择：**{selected_topic}**（实验内容后续补充）")
-
     status_data = _load_status()
     if status_data is None:
         running_run = None
@@ -1931,8 +2067,30 @@ def main() -> None:
         running_run = status_data.get("running")
         running_metrics = status_data.get("running_metrics")
         if not running_run:
-            _clear_experiment_runtime_state()
+            _clear_sandbox_bound_state()
         _maybe_auto_stop_idle_sandbox(running_run)
+
+    topic_options = list(EXPERIMENT_TOPICS)
+    running_topic = str((running_run or {}).get("experiment_topic") or "")
+    if running_topic and running_topic not in topic_options:
+        topic_options.append(running_topic)
+    if "lab_selected_topic" not in st.session_state:
+        st.session_state.lab_selected_topic = topic_options[0]
+    if running_topic:
+        st.session_state.lab_locked_topic = running_topic
+        st.session_state.lab_selected_topic = running_topic
+    else:
+        st.session_state.pop("lab_locked_topic", None)
+
+    selected_topic = st.selectbox(
+        "请选择实验课题",
+        options=topic_options,
+        key="lab_selected_topic",
+        disabled=bool(running_run),
+    )
+    if running_topic:
+        selected_topic = running_topic
+    st.write(f"当前选择：**{selected_topic}**（实验内容后续补充）")
 
     if status_data is not None:
         _collect_experiment_resource_sample(status_data, running_run, selected_topic)
