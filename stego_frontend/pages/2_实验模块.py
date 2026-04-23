@@ -26,6 +26,8 @@ from stego_logic.dct_steg import (
     estimate_capacity as estimate_dct_capacity,
     extract_message as extract_dct_message,
     psnr_rgb_images as psnr_dct_rgb_images,
+    simulate_gaussian_noise_attack,
+    simulate_jpeg_compression_attack,
 )
 from stego_logic.lsb_steg import (
     build_bit_plane_payload,
@@ -83,6 +85,11 @@ def _clear_experiment_runtime_state() -> None:
     for prefix in TOPIC_STATE_PREFIX.values():
         st.session_state.pop(f"{prefix}_embed_started_at", None)
         st.session_state.pop(f"{prefix}_auto_save_pending", None)
+    # DCT 鲁棒性测试状态
+    st.session_state.pop("dct_attacked_image", None)
+    st.session_state.pop("dct_attacked_extracted_text", None)
+    st.session_state.pop("dct_attack_config", None)
+    st.session_state.pop("dct_attack_error", None)
 
 
 def _maybe_auto_stop_idle_sandbox(running_run: dict[str, Any] | None) -> None:
@@ -1633,6 +1640,10 @@ def _render_dct_experiment_panel(
             else:
                 st.session_state.dct_embed_started_at = _now_shanghai_iso()
                 st.session_state.dct_auto_save_pending = True
+                st.session_state.pop("dct_attacked_image", None)
+                st.session_state.pop("dct_attacked_extracted_text", None)
+                st.session_state.pop("dct_attack_config", None)
+                st.session_state.pop("dct_attack_error", None)
                 run_id = running_run.get("id")
                 if run_id is not None:
                     st.session_state.lab_resource_tracker = {
@@ -1698,6 +1709,119 @@ def _render_dct_experiment_panel(
     bit_plane_payload = _render_bit_plane_decomposition(cover_saved, stego_saved)
 
     source_text = st.session_state.get("dct_source_text", "")
+    st.markdown("**鲁棒性测试（攻击后再提取）**")
+    atk_col_1, atk_col_2 = st.columns(2)
+    with atk_col_1:
+        enable_compression = st.checkbox(
+            "模拟压缩攻击（JPEG）",
+            value=True,
+            key="dct_attack_enable_compression",
+        )
+        jpeg_quality = st.slider(
+            "压缩质量（越低攻击越强）",
+            min_value=10,
+            max_value=95,
+            value=70,
+            key="dct_attack_jpeg_quality",
+            disabled=not enable_compression,
+        )
+    with atk_col_2:
+        enable_noise = st.checkbox(
+            "模拟高斯噪声攻击",
+            value=False,
+            key="dct_attack_enable_noise",
+        )
+        noise_sigma = st.slider(
+            "噪声强度 sigma",
+            min_value=0.5,
+            max_value=30.0,
+            value=4.0,
+            step=0.5,
+            key="dct_attack_noise_sigma",
+            disabled=not enable_noise,
+        )
+
+    if st.button("执行鲁棒性测试", width="stretch", key="dct_run_robustness_test"):
+        _touch_lab_experiment_activity()
+        if not enable_compression and not enable_noise:
+            st.warning("请至少选择一种攻击方式后再执行测试。")
+        else:
+            attacked_image = stego_saved.copy()
+            attack_config: dict[str, Any] = {}
+            try:
+                if enable_compression:
+                    attacked_image = simulate_jpeg_compression_attack(
+                        attacked_image, quality=jpeg_quality
+                    )
+                    attack_config["jpeg_quality"] = jpeg_quality
+                if enable_noise:
+                    attacked_image = simulate_gaussian_noise_attack(
+                        attacked_image, sigma=float(noise_sigma)
+                    )
+                    attack_config["noise_sigma"] = float(noise_sigma)
+                attacked_extracted = extract_dct_message(attacked_image)
+            except Exception as exc:
+                st.session_state.dct_attacked_image = attacked_image
+                st.session_state.dct_attacked_extracted_text = ""
+                st.session_state.dct_attack_config = attack_config
+                st.session_state.dct_attack_error = str(exc)
+                st.error(f"鲁棒性测试失败：{exc}")
+            else:
+                st.session_state.dct_attacked_image = attacked_image
+                st.session_state.dct_attacked_extracted_text = attacked_extracted
+                st.session_state.dct_attack_config = attack_config
+                st.session_state.dct_attack_error = ""
+                st.success("鲁棒性测试完成，已生成攻击后提取结果。")
+
+    attacked_saved = st.session_state.get("dct_attacked_image")
+    attacked_extracted = st.session_state.get("dct_attacked_extracted_text", "")
+    attack_config = st.session_state.get("dct_attack_config") or {}
+    attack_error = st.session_state.get("dct_attack_error", "")
+    if attacked_saved is not None:
+        atk_view_col_1, atk_view_col_2 = st.columns(2)
+        with atk_view_col_1:
+            st.markdown("**攻击后图像**")
+            st.image(attacked_saved, width="stretch")
+        with atk_view_col_2:
+            st.markdown("**攻击参数**")
+            if attack_config:
+                if "jpeg_quality" in attack_config:
+                    st.caption(f"压缩质量：{attack_config['jpeg_quality']}")
+                if "noise_sigma" in attack_config:
+                    st.caption(f"噪声强度 sigma：{attack_config['noise_sigma']:.1f}")
+            else:
+                st.caption("无攻击参数记录。")
+            attacked_buf = BytesIO()
+            attacked_saved.save(attacked_buf, format="PNG")
+            st.download_button(
+                "下载攻击后图像（PNG）",
+                data=attacked_buf.getvalue(),
+                file_name="dct_attacked.png",
+                mime="image/png",
+                width="stretch",
+                key="dct_download_attacked_image",
+            )
+            st.text_area(
+                "攻击后提取文本",
+                value=attacked_extracted,
+                height=120,
+                disabled=True,
+                key="dct_attacked_extracted_text_preview",
+            )
+        if attack_error:
+            st.error(f"攻击后提取失败：{attack_error}")
+        elif source_text and attacked_extracted:
+            if source_text == attacked_extracted:
+                st.success("攻击后提取仍与原始文本一致，具备较好鲁棒性。")
+            else:
+                mismatch_idx = next(
+                    (i for i, (a, b) in enumerate(zip(source_text, attacked_extracted)) if a != b),
+                    min(len(source_text), len(attacked_extracted)),
+                )
+                st.warning(
+                    f"攻击后提取与原始文本不一致，首个差异位置：{mismatch_idx}。"
+                )
+
     try:
         extracted = extract_dct_message(stego_saved)
     except Exception as exc:

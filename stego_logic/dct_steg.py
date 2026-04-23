@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from io import BytesIO
 from typing import Tuple
 
 import numpy as np
@@ -302,6 +303,33 @@ def build_histogram_figure(cover_image: Image.Image, stego_image: Image.Image):
         text=f"<b>Max delta at</b><br>bin={peak_bin}<br>delta={peak_val:.0f}",
     )
     return fig
+
+
+def simulate_jpeg_compression_attack(image: Image.Image, quality: int) -> Image.Image:
+    """模拟 JPEG 有损压缩攻击。"""
+    if quality < 10 or quality > 95:
+        raise ValueError("JPEG 质量参数必须在 10~95 之间。")
+    rgb_image = image.convert("RGB")
+    buf = BytesIO()
+    rgb_image.save(buf, format="JPEG", quality=int(quality), optimize=True)
+    buf.seek(0)
+    attacked = Image.open(buf).convert("RGB")
+    return attacked.copy()
+
+
+def simulate_gaussian_noise_attack(
+    image: Image.Image,
+    sigma: float,
+    seed: int | None = None,
+) -> Image.Image:
+    """模拟高斯噪声攻击。"""
+    if sigma < 0.5 or sigma > 30.0:
+        raise ValueError("噪声强度 sigma 必须在 0.5~30.0 之间。")
+    rng = np.random.default_rng(seed)
+    rgb_arr = _to_rgb_array(image).astype(np.float32)
+    noise = rng.normal(loc=0.0, scale=float(sigma), size=rgb_arr.shape)
+    attacked = np.clip(rgb_arr + noise, 0.0, 255.0).astype(np.uint8)
+    return Image.fromarray(attacked, mode="RGB")
 
 
 def estimate_capacity(image: Image.Image) -> Tuple[int, int]:
