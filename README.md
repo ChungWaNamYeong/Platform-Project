@@ -229,9 +229,9 @@ streamlit run stego_frontend/app.py
 
 ## 项目声明
 
-·项目名称:信息隐藏教学平台
-·项目作者:ChungWaNamYeong 李佳霖
-·作者单位:暨南大学网络空间安全学院
-·开发语言:Python
-·框架:Django+Streamlit
-核心技术:RAG、Docker、信息隐藏算法
+- 项目名称:信息隐藏教学平台
+- 项目作者:ChungWaNamYeong 李佳霖
+- 作者单位:暨南大学网络空间安全学院
+- 开发语言:Python
+- 框架:Django+Streamlit
+- 核心技术:RAG、Docker、信息隐藏算法
