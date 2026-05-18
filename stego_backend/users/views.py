@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import time
 
 from django.contrib.auth import authenticate, get_user_model
+from django.db import OperationalError
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_datetime
@@ -30,6 +32,40 @@ from .serializers import (
 )
 
 Student = get_user_model()
+
+
+def _is_sqlite_locked_error(exc: Exception) -> bool:
+    """判断是否为 SQLite 的数据库锁冲突。"""
+    return "database is locked" in str(exc).lower()
+
+
+def _create_sandbox_run_with_retry(*, user, experiment_topic: str, max_attempts: int = 3) -> SandboxRun:
+    """创建 SandboxRun，遇到 SQLite 锁冲突时做短暂重试。"""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return SandboxRun.objects.create(
+                user=user,
+                experiment_topic=experiment_topic,
+                status=SandboxRun.STATUS_STARTING,
+            )
+        except OperationalError as exc:
+            if not _is_sqlite_locked_error(exc) or attempt >= max_attempts:
+                raise
+            # 退避重试，降低并发写入时瞬时锁冲突概率。
+            time.sleep(0.15 * attempt)
+
+
+def _save_sandbox_run_with_retry(run: SandboxRun, update_fields: list[str], max_attempts: int = 3) -> None:
+    """保存 SandboxRun，遇到 SQLite 锁冲突时做短暂重试。"""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            run.save(update_fields=update_fields)
+            return
+        except OperationalError as exc:
+            if not _is_sqlite_locked_error(exc) or attempt >= max_attempts:
+                raise
+            # 保存阶段同样可能遇到短时锁，重试可避免无意义失败。
+            time.sleep(0.15 * attempt)
 
 
 def _filter_experiment_records_for_request(request, queryset):
@@ -177,11 +213,20 @@ class SandboxStartView(APIView):
                 }
             )
 
-        run = SandboxRun.objects.create(
-            user=request.user,
-            experiment_topic=experiment_topic,
-            status=SandboxRun.STATUS_STARTING,
-        )
+        try:
+            run = _create_sandbox_run_with_retry(
+                user=request.user,
+                experiment_topic=experiment_topic,
+            )
+        except OperationalError as exc:
+            return Response(
+                {
+                    "detail": f"启动沙箱失败：{exc}",
+                    "error_code": "database_locked",
+                    "hint": "数据库正忙，请 1-2 秒后重试；若频繁出现请联系管理员检查并发写入。",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         try:
             sandbox = StegoSandbox()
@@ -197,7 +242,11 @@ class SandboxStartView(APIView):
         except Exception as exc:
             run.status = SandboxRun.STATUS_FAILED
             run.launch_error = str(exc)
-            run.save(update_fields=["status", "launch_error", "updated_at"])
+            try:
+                _save_sandbox_run_with_retry(run, ["status", "launch_error", "updated_at"])
+            except OperationalError:
+                # 启动失败时若记录保存也受锁影响，不再向外抛错，避免覆盖原始启动异常。
+                pass
             error_code = "sandbox_start_failed"
             hint = "请联系管理员查看后端日志。"
             exc_text = str(exc)
@@ -227,18 +276,29 @@ class SandboxStartView(APIView):
         run.launch_error = ""
         run.started_at = timezone.now()
         run.stopped_at = None
-        run.save(
-            update_fields=[
-                "status",
-                "container_id",
-                "web_port",
-                "image_name",
-                "launch_error",
-                "started_at",
-                "stopped_at",
-                "updated_at",
-            ]
-        )
+        try:
+            _save_sandbox_run_with_retry(
+                run,
+                [
+                    "status",
+                    "container_id",
+                    "web_port",
+                    "image_name",
+                    "launch_error",
+                    "started_at",
+                    "stopped_at",
+                    "updated_at",
+                ],
+            )
+        except OperationalError as exc:
+            return Response(
+                {
+                    "detail": f"启动沙箱失败：{exc}",
+                    "error_code": "database_locked",
+                    "hint": "容器已启动但状态写入失败，请稍后刷新状态页确认运行结果。",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         payload = SandboxRunSerializer(run).data
         payload["web_url"] = self._build_web_url(request, run.web_port)
@@ -297,7 +357,17 @@ class SandboxStopView(APIView):
 
         run.status = SandboxRun.STATUS_STOPPED
         run.stopped_at = timezone.now()
-        run.save(update_fields=["status", "stopped_at", "updated_at"])
+        try:
+            _save_sandbox_run_with_retry(run, ["status", "stopped_at", "updated_at"])
+        except OperationalError as exc:
+            return Response(
+                {
+                    "detail": f"停止沙箱失败：{exc}",
+                    "error_code": "database_locked",
+                    "hint": "数据库正忙，请稍后重试停止操作。",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return Response({"detail": "沙箱已停止", "run": SandboxRunSerializer(run).data})
 
 

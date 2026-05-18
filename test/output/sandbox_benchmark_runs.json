@@ -1,0 +1,169 @@
+{
+  "runs": [
+    {
+      "scenario": "P1",
+      "container_count": 5,
+      "repeat_index": 1,
+      "avg_cpu_percent": 0.0522,
+      "peak_cpu_percent": 0.09,
+      "avg_memory_gb": 0.0743,
+      "peak_memory_gb": 0.0748,
+      "avg_startup_seconds": 0.4826,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P1",
+      "container_count": 5,
+      "repeat_index": 2,
+      "avg_cpu_percent": 0.0511,
+      "peak_cpu_percent": 0.06,
+      "avg_memory_gb": 0.0745,
+      "peak_memory_gb": 0.0761,
+      "avg_startup_seconds": 0.4983,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P1",
+      "container_count": 5,
+      "repeat_index": 3,
+      "avg_cpu_percent": 0.0494,
+      "peak_cpu_percent": 0.05,
+      "avg_memory_gb": 0.076,
+      "peak_memory_gb": 0.076,
+      "avg_startup_seconds": 0.496,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P1",
+      "container_count": 5,
+      "repeat_index": 4,
+      "avg_cpu_percent": 0.0506,
+      "peak_cpu_percent": 0.06,
+      "avg_memory_gb": 0.0742,
+      "peak_memory_gb": 0.0744,
+      "avg_startup_seconds": 0.5179,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P1",
+      "container_count": 5,
+      "repeat_index": 5,
+      "avg_cpu_percent": 0.0506,
+      "peak_cpu_percent": 0.06,
+      "avg_memory_gb": 0.0742,
+      "peak_memory_gb": 0.0742,
+      "avg_startup_seconds": 0.4982,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P2",
+      "container_count": 10,
+      "repeat_index": 1,
+      "avg_cpu_percent": 0.1011,
+      "peak_cpu_percent": 0.11,
+      "avg_memory_gb": 0.1488,
+      "peak_memory_gb": 0.1504,
+      "avg_startup_seconds": 0.4998,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P2",
+      "container_count": 10,
+      "repeat_index": 2,
+      "avg_cpu_percent": 0.1006,
+      "peak_cpu_percent": 0.11,
+      "avg_memory_gb": 0.1489,
+      "peak_memory_gb": 0.1502,
+      "avg_startup_seconds": 0.5453,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P2",
+      "container_count": 10,
+      "repeat_index": 3,
+      "avg_cpu_percent": 0.1056,
+      "peak_cpu_percent": 0.14,
+      "avg_memory_gb": 0.1489,
+      "peak_memory_gb": 0.1504,
+      "avg_startup_seconds": 0.5128,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P2",
+      "container_count": 10,
+      "repeat_index": 4,
+      "avg_cpu_percent": 0.1022,
+      "peak_cpu_percent": 0.11,
+      "avg_memory_gb": 0.1489,
+      "peak_memory_gb": 0.1504,
+      "avg_startup_seconds": 0.5116,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P2",
+      "container_count": 10,
+      "repeat_index": 5,
+      "avg_cpu_percent": 0.1011,
+      "peak_cpu_percent": 0.11,
+      "avg_memory_gb": 0.1489,
+      "peak_memory_gb": 0.1505,
+      "avg_startup_seconds": 0.4872,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P3",
+      "container_count": 15,
+      "repeat_index": 1,
+      "avg_cpu_percent": 0.1561,
+      "peak_cpu_percent": 0.21,
+      "avg_memory_gb": 0.223,
+      "peak_memory_gb": 0.2246,
+      "avg_startup_seconds": 0.4867,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P3",
+      "container_count": 15,
+      "repeat_index": 2,
+      "avg_cpu_percent": 0.3922,
+      "peak_cpu_percent": 4.48,
+      "avg_memory_gb": 0.223,
+      "peak_memory_gb": 0.2246,
+      "avg_startup_seconds": 0.5022,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P3",
+      "container_count": 15,
+      "repeat_index": 3,
+      "avg_cpu_percent": 0.1567,
+      "peak_cpu_percent": 0.22,
+      "avg_memory_gb": 0.2231,
+      "peak_memory_gb": 0.2244,
+      "avg_startup_seconds": 0.505,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P3",
+      "container_count": 15,
+      "repeat_index": 4,
+      "avg_cpu_percent": 0.6817,
+      "peak_cpu_percent": 9.54,
+      "avg_memory_gb": 0.223,
+      "peak_memory_gb": 0.2244,
+      "avg_startup_seconds": 0.4982,
+      "sample_count": 18
+    },
+    {
+      "scenario": "P3",
+      "container_count": 15,
+      "repeat_index": 5,
+      "avg_cpu_percent": 0.1572,
+      "peak_cpu_percent": 0.21,
+      "avg_memory_gb": 0.223,
+      "peak_memory_gb": 0.2247,
+      "avg_startup_seconds": 0.5051,
+      "sample_count": 18
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "total_count": 16,
+  "pass_count": 12,
+  "pass_rate": 0.75,
+  "ood_total": 4,
+  "ood_reject_count": 0,
+  "ood_reject_rate": 0.0,
+  "citation_hit_count": 13,
+  "citation_hit_rate": 0.8125,
+  "context_precision_proxy": 0.923077,
+  "context_recall_proxy": 1.0,
+  "required_citation_scope_types": [
+    "对抗",
+    "领域内"
+  ],
+  "required_count_for_context_recall": 12,
+  "required_citation_and_pass_count": 12
+}

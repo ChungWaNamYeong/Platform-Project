@@ -1,0 +1,31 @@
+{
+  "summary": [
+    {
+      "scenario": "P1",
+      "container_count": 5,
+      "avg_cpu_percent": 0.0508,
+      "peak_cpu_percent": 0.064,
+      "avg_memory_gb": 0.0746,
+      "peak_memory_gb": 0.0751,
+      "avg_startup_seconds": 0.4986
+    },
+    {
+      "scenario": "P2",
+      "container_count": 10,
+      "avg_cpu_percent": 0.1021,
+      "peak_cpu_percent": 0.116,
+      "avg_memory_gb": 0.1489,
+      "peak_memory_gb": 0.1504,
+      "avg_startup_seconds": 0.5113
+    },
+    {
+      "scenario": "P3",
+      "container_count": 15,
+      "avg_cpu_percent": 0.3088,
+      "peak_cpu_percent": 2.932,
+      "avg_memory_gb": 0.223,
+      "peak_memory_gb": 0.2245,
+      "avg_startup_seconds": 0.4994
+    }
+  ]
+}

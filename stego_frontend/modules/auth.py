@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Any
 
@@ -12,12 +13,25 @@ import streamlit as st
 from stego_frontend.modules import branding
 
 
+def _normalize_text_error(payload_text: str) -> str:
+    """压缩文本错误，避免将整页 HTML traceback 直接展示给用户。"""
+    text = (payload_text or "").strip()
+    if not text:
+        return "请求失败"
+    lower_text = text.lower()
+    if "<html" in lower_text or "<!doctype html" in lower_text:
+        title_match = re.search(r"<title>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL)
+        title = title_match.group(1).strip() if title_match else "服务端异常"
+        return f"{title}（后端返回了 HTML 错误页）"
+    return text
+
+
 def _extract_api_error(payload: Any) -> str:
     """将后端返回的各种错误结构格式化为可读字符串。"""
     if payload is None:
         return "请求失败"
     if isinstance(payload, str):
-        return payload.strip() or "请求失败"
+        return _normalize_text_error(payload)
     if isinstance(payload, list):
         parts = [str(item).strip() for item in payload if str(item).strip()]
         return "; ".join(parts) or "请求失败"

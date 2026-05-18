@@ -52,6 +52,10 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
+        "OPTIONS": {
+            # SQLite 忙等待超时（秒），降低高并发短时写锁导致的失败概率。
+            "timeout": 20,
+        },
     }
 }
 
